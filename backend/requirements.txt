@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+openai
+llmio
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+pydantic
+python-dotenv
+PyJWT
+bcrypt

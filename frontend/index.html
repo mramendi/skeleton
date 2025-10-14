@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Skeleton - Minimal AI Chat (Alpine.js)</title>
+
+    <!-- Markdown and syntax highlighting -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+
+    <!-- HTML sanitization -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+
+    <!-- Alpine.js -->
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden; /* Prevent body scroll in fixed mode */
+        }
+        
+        .header {
+            background: #fff;
+            border-bottom: 1px solid #e0e0e0;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0; /* Prevent header from shrinking */
+        }
+        
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        .main-container {
+            flex: 1 1 0; /* Take all remaining space after header */
+            display: flex;
+            overflow: hidden;
+            min-height: 0;
+        }
+        
+        .sidebar {
+            width: 300px;
+            flex-shrink: 0; /* Don't let it shrink */
+            background: #fff;
+            border-right: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            min-height: 0; /* Critical for flex children to scroll */
+        }
+        
+        .sidebar-header {
+            padding: 1rem;
+            border-bottom: 1px solid #e0e0e0;
+            flex-shrink: 0; /* Prevent header from shrinking */
+        }
+
+        .new-thread-button {
+            width: 100%;
+            padding: 0.75rem;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 0.75rem;
+            transition: background 0.2s;
+        }
+
+        .new-thread-button:hover {
+            background: #218838;
+        }
+
+        .layout-toggle-button {
+            width: 100%;
+            padding: 0.5rem;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            margin-bottom: 0.75rem;
+            transition: background 0.2s;
+        }
+
+        .layout-toggle-button:hover {
+            background: #5a6268;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .thread-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.5rem;
+        }
+        
+        .thread-item {
+            padding: 0.75rem;
+            margin-bottom: 0.25rem;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .thread-item:hover {
+            background: #f5f5f5;
+        }
+        
+        .thread-item.active {
+            background: #e3f2fd;
+        }
+        
+        .chat-container {
+            flex: 1 1 0; /* Grow to fill, shrink if needed, 0 base */
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+            min-height: 0; /* Critical for flex children to scroll */
+            overflow: hidden; /* Constrain children */
+        }
+        
+        .chat-header {
+            padding: 1rem;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0; /* Prevent header from shrinking */
+        }
+        
+        .model-selector, .system-prompt-selector {
+            padding: 0.5rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+        }
+        
+        .chat-messages {
+            flex: 1 1 0; /* Grow to fill available space */
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 1rem;
+        }
+        
+        .message {
+            margin-bottom: 1rem;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .message.user {
+            align-items: flex-end;
+        }
+        
+        .message.assistant {
+            align-items: flex-start;
+        }
+        
+        .message-bubble {
+            max-width: 70%;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            word-wrap: break-word;
+        }
+        
+        .message.user .message-bubble {
+            background: #007bff;
+            color: white;
+        }
+        
+        .message.assistant .message-bubble {
+            background: #f1f3f4;
+            color: #333;
+        }
+        
+        .message-time {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 0.25rem;
+        }
+
+        /* Markdown styles for message content */
+        .message-bubble p {
+            margin: 0 0 0.5rem 0;
+        }
+
+        .message-bubble p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-bubble code {
+            background: rgba(0, 0, 0, 0.05);
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .message.user .message-bubble code {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .message-bubble pre {
+            background: #f6f8fa;
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+
+        .message-bubble pre code {
+            background: none;
+            padding: 0;
+            font-size: 0.85em;
+            line-height: 1.5;
+        }
+
+        .message-bubble ul,
+        .message-bubble ol {
+            margin: 0.5rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .message-bubble li {
+            margin: 0.25rem 0;
+        }
+
+        .message-bubble blockquote {
+            border-left: 3px solid #d0d7de;
+            padding-left: 1rem;
+            margin: 0.5rem 0;
+            color: #57606a;
+        }
+
+        .message.user .message-bubble blockquote {
+            border-left-color: rgba(255, 255, 255, 0.4);
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .message-bubble h1,
+        .message-bubble h2,
+        .message-bubble h3,
+        .message-bubble h4,
+        .message-bubble h5,
+        .message-bubble h6 {
+            margin: 0.75rem 0 0.5rem 0;
+            font-weight: 600;
+        }
+
+        .message-bubble h1 { font-size: 1.5em; }
+        .message-bubble h2 { font-size: 1.3em; }
+        .message-bubble h3 { font-size: 1.1em; }
+
+        .message-bubble a {
+            color: #0969da;
+            text-decoration: none;
+        }
+
+        .message.user .message-bubble a {
+            color: #fff;
+            text-decoration: underline;
+        }
+
+        .message-bubble table {
+            border-collapse: collapse;
+            margin: 0.5rem 0;
+            width: 100%;
+        }
+
+        .message-bubble th,
+        .message-bubble td {
+            border: 1px solid #d0d7de;
+            padding: 0.5rem;
+            text-align: left;
+        }
+
+        .message-bubble th {
+            background: #f6f8fa;
+            font-weight: 600;
+        }
+
+        .chat-input-container {
+            padding: 1rem;
+            border-top: 1px solid #e0e0e0;
+            flex-shrink: 0; /* Don't shrink in fixed mode */
+        }
+
+        .chat-input-container form {
+            display: flex;
+            gap: 0.5rem;
+            align-items: flex-end;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 1rem;
+            resize: vertical;
+            font-family: inherit;
+            height: 100px; /* Fixed height instead of min-height */
+            line-height: 1.5;
+        }
+        
+        .send-button {
+            padding: 0.75rem 1.5rem;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+            align-self: stretch;
+            white-space: nowrap;
+        }
+        
+        .send-button:hover {
+            background: #0056b3;
+        }
+        
+        .send-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .login-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #f5f5f5;
+        }
+        
+        .login-form {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+        }
+        
+        .login-form h2 {
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        
+        .error-message {
+            color: #dc3545;
+            margin-top: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        #app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        
+        .fade-in {
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Document scroll mode - when body has 'document-scroll' class */
+        body.document-scroll {
+            height: auto;
+            min-height: 100vh;
+            overflow: auto !important; /* Force body scroll */
+        }
+
+        body.document-scroll .main-container {
+            flex: none;
+            overflow: visible;
+        }
+
+        body.document-scroll .sidebar {
+            position: fixed;
+            left: 0;
+            top: 60px; /* Below header */
+            height: calc(100vh - 60px);
+            overflow-y: auto;
+        }
+
+        body.document-scroll .chat-container {
+            margin-left: 300px; /* Make room for fixed sidebar */
+            min-height: auto;
+        }
+
+        body.document-scroll .chat-messages {
+            flex: none;
+            overflow-y: visible;
+            min-height: auto;
+            padding-bottom: 2rem;
+        }
+
+        body.document-scroll .chat-input-container {
+            position: sticky;
+            bottom: 0;
+            background: white;
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Form -->
+    <div id="login-container" class="login-container" x-data="loginApp()">
+        <form class="login-form" @submit.prevent="handleLogin">
+            <h2>Skeleton Login</h2>
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" x-model="username" required>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" x-model="password" required>
+            </div>
+            <button type="submit" class="send-button" style="width: 100%;" :disabled="loading">
+                <span x-show="!loading">Login</span>
+                <span x-show="loading">Logging in...</span>
+            </button>
+            <div x-show="error" x-text="error" class="error-message"></div>
+        </form>
+    </div>
+
+    <!-- Main App -->
+    <div id="app-container" class="hidden" x-data="chatApp()" x-init="init()">
+        <header class="header">
+            <h1>Skeleton</h1>
+            <button @click="logout" class="send-button" style="padding: 0.5rem 1rem;">Logout</button>
+        </header>
+        
+        <div class="main-container">
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <button class="new-thread-button" @click="startNewThread">
+                        + New Thread
+                    </button>
+                    <button class="layout-toggle-button" @click="toggleLayout">
+                        <span x-text="documentScrollMode ? 'Mode: Document Scroll' : 'Mode: Fixed Scroll'"></span>
+                    </button>
+                    <input type="text" class="search-box" placeholder="Search threads..."
+                           x-model="searchQuery"
+                           @input.debounce.300ms="searchThreads">
+                </div>
+                <div class="thread-list">
+                    <template x-for="thread in threads" :key="thread.id">
+                        <div class="thread-item" 
+                             :class="{ 'active': currentThreadId === thread.id }"
+                             @click="selectThread(thread.id, thread.title)">
+                            <div x-text="thread.title"></div>
+                            <small x-text="formatDate(thread.created)"></small>
+                        </div>
+                    </template>
+                </div>
+            </aside>
+            
+            <main class="chat-container">
+                <div class="chat-header">
+                    <h2 x-text="currentThreadTitle">New Chat</h2>
+                    <div>
+                        <select id="model-selector" class="model-selector" x-model="currentModel">
+                            <template x-for="model in models" :key="model">
+                                <option :value="model" x-text="model"></option>
+                            </template>
+                        </select>
+                        <select id="system-prompt-selector" class="system-prompt-selector" x-model="currentSystemPrompt">
+                            <option value="default">Default</option>
+                            <option value="code-assistant">Code Assistant</option>
+                            <option value="creative-writing">Creative Writing</option>
+                            <option value="analysis">Analysis</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="chat-messages" x-ref="messagesContainer">
+                    <template x-for="message in messages" :key="message.id">
+                        <div class="message" :class="message.role">
+                            <div class="message-bubble" x-html="renderMarkdown(message.content)"></div>
+                            <div class="message-time" x-text="formatTime(message.timestamp)"></div>
+                        </div>
+                    </template>
+                </div>
+                
+                <div class="chat-input-container">
+                    <form @submit.prevent="sendMessage">
+                        <textarea class="chat-input" rows="4"
+                                  x-model="newMessage"
+                                  placeholder="Type your message..."
+                                  @keydown.enter.prevent="sendMessage"></textarea>
+                        <button type="submit" class="send-button" :disabled="loading">
+                            <span x-show="!loading">Send</span>
+                            <span x-show="loading">Sending...</span>
+                        </button>
+                    </form>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // Login App
+        function loginApp() {
+            return {
+                username: '',
+                password: '',
+                loading: false,
+                error: '',
+                
+                async handleLogin() {
+                    this.loading = true;
+                    this.error = '';
+                    
+                    try {
+                        const response = await fetch('/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                username: this.username,
+                                password: this.password
+                            })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (response.ok) {
+                            localStorage.setItem('authToken', data.access_token);
+                            document.getElementById('app-container').classList.remove('hidden');
+                            document.getElementById('login-container').classList.add('hidden');
+                        } else {
+                            this.error = data.detail || 'Login failed';
+                        }
+                    } catch (error) {
+                        this.error = 'Network error';
+                    } finally {
+                        this.loading = false;
+                    }
+                }
+            }
+        }
+        
+        // Chat App
+        function chatApp() {
+            return {
+                // State
+                messages: [],
+                threads: [],
+                models: [],
+                currentThreadId: null,
+                currentThreadTitle: 'New Chat',
+                currentModel: 'gpt-3.5-turbo',
+                currentSystemPrompt: 'default',
+                newMessage: '',
+                searchQuery: '',
+                loading: false,
+                eventSource: null,
+                documentScrollMode: false,
+                
+                // Initialization
+                async init() {
+                    const token = localStorage.getItem('authToken');
+                    if (!token) {
+                        document.getElementById('app-container').classList.add('hidden');
+                        document.getElementById('login-container').classList.remove('hidden');
+                        return;
+                    }
+
+                    // Load scroll mode preference
+                    const scrollMode = localStorage.getItem('scrollMode');
+                    if (scrollMode === 'document') {
+                        this.documentScrollMode = true;
+                        document.body.classList.add('document-scroll');
+                    }
+
+                    // Configure marked.js to use highlight.js for code blocks
+                    marked.setOptions({
+                        highlight: function(code, lang) {
+                            if (lang && hljs.getLanguage(lang)) {
+                                try {
+                                    return hljs.highlight(code, { language: lang }).value;
+                                } catch (err) {
+                                    console.error('Highlight.js error:', err);
+                                }
+                            }
+                            return hljs.highlightAuto(code).value;
+                        },
+                        breaks: true,  // Convert \n to <br>
+                        gfm: true      // GitHub Flavored Markdown
+                    });
+
+                    await this.loadModels();
+                    await this.loadThreads();
+                },
+                
+                // API Methods
+                async apiCall(url, options = {}) {
+                    const token = localStorage.getItem('authToken');
+                    const response = await fetch(url, {
+                        ...options,
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json',
+                            ...options.headers
+                        }
+                    });
+                    
+                    if (response.status === 401) {
+                        this.logout();
+                        throw new Error('Authentication required');
+                    }
+                    
+                    return response;
+                },
+                
+                async loadModels() {
+                    try {
+                        const response = await this.apiCall('/api/v1/models');
+                        this.models = await response.json();
+                        if (this.models.length > 0) {
+                            this.currentModel = this.models[0];
+                        }
+                    } catch (error) {
+                        console.error('Failed to load models:', error);
+                    }
+                },
+                
+                async loadThreads() {
+                    try {
+                        const response = await this.apiCall('/api/v1/threads');
+                        this.threads = await response.json();
+                    } catch (error) {
+                        console.error('Failed to load threads:', error);
+                    }
+                },
+                
+                async searchThreads() {
+                    if (!this.searchQuery) {
+                        await this.loadThreads();
+                        return;
+                    }
+                    
+                    try {
+                        const response = await this.apiCall(`/api/v1/search?q=${encodeURIComponent(this.searchQuery)}`);
+                        const results = await response.json();
+                        this.threads = results;
+                    } catch (error) {
+                        console.error('Failed to search threads:', error);
+                    }
+                },
+                
+                startNewThread() {
+                    // Clear current thread to start a new conversation
+                    this.currentThreadId = null;
+                    this.currentThreadTitle = 'New Chat';
+                    this.messages = [];
+                },
+
+                async selectThread(threadId, title) {
+                    this.currentThreadId = threadId;
+                    this.currentThreadTitle = title;
+                    await this.loadThreadMessages(threadId);
+                },
+
+                async loadThreadMessages(threadId) {
+                    try {
+                        const response = await this.apiCall(`/api/v1/threads/${threadId}/messages`);
+                        const messages = await response.json();
+                        this.messages = messages.map((msg, index) => ({
+                            ...msg,
+                            id: `${threadId}-${index}`
+                        }));
+                        this.$nextTick(() => {
+                            this.scrollToBottom();
+                        });
+                    } catch (error) {
+                        console.error('Failed to load messages:', error);
+                    }
+                },
+
+                scrollToBottom() {
+                    if (this.documentScrollMode) {
+                        // Scroll the whole document
+                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                    } else {
+                        // Scroll the messages container
+                        this.$refs.messagesContainer.scrollTop = this.$refs.messagesContainer.scrollHeight;
+                    }
+                },
+                
+                // Message Handling
+                async sendMessage() {
+                    if (!this.newMessage.trim() || this.loading) return;
+                    
+                    this.loading = true;
+                    
+                    // Add user message
+                    const userMessage = {
+                        id: Date.now().toString(),
+                        role: 'user',
+                        content: this.newMessage,
+                        timestamp: new Date().toISOString()
+                    };
+                    this.messages.push(userMessage);
+                    
+                    // Clear input
+                    const messageContent = this.newMessage;
+                    this.newMessage = '';
+
+                    this.$nextTick(() => {
+                        this.scrollToBottom();
+                    });
+
+                    // Start SSE stream
+                    await this.startStream(messageContent);
+                },
+                
+                async startStream(content) {
+                    try {
+                        const token = localStorage.getItem('authToken');
+                        const formData = new FormData();
+                        formData.append('content', content);
+                        if (this.currentThreadId) formData.append('thread_id', this.currentThreadId);
+                        formData.append('model', this.currentModel);
+                        formData.append('system_prompt', this.currentSystemPrompt);
+
+                        const response = await fetch('/api/v1/message', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${token}`
+                            },
+                            body: formData
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buffer = '';
+
+                        // Create assistant message
+                        let assistantMessage = {
+                            id: Date.now().toString() + '-assistant',
+                            role: 'assistant',
+                            content: '',
+                            timestamp: new Date().toISOString()
+                        };
+                        this.messages.push(assistantMessage);
+
+                        // Read the stream
+                        while (true) {
+                            const { value, done } = await reader.read();
+                            if (done) break;
+
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split('\n');
+                            buffer = lines.pop(); // Keep incomplete line in buffer
+
+                            for (const line of lines) {
+                                if (line.startsWith('data: ')) {
+                                    try {
+                                        const data = JSON.parse(line.slice(6));
+
+                                        if (data.event === 'thread_id') {
+                                            // Update current thread ID if new thread was created
+                                            this.currentThreadId = data.data.thread_id;
+                                        } else if (data.event === 'message_tokens') {
+                                            assistantMessage.content += data.data.content;
+                                            // Update the message in place
+                                            const index = this.messages.findIndex(m => m.id === assistantMessage.id);
+                                            if (index !== -1) {
+                                                this.messages[index] = { ...assistantMessage };
+                                            }
+                                            this.$nextTick(() => {
+                                                this.scrollToBottom();
+                                            });
+                                        } else if (data.event === 'stream_end') {
+                                            this.loading = false;
+                                            // Refresh threads if new thread was created
+                                            await this.loadThreads();
+                                        } else if (data.event === 'error') {
+                                            console.error('Stream error:', data.data.message);
+                                            assistantMessage.content = `Error: ${data.data.message}`;
+                                            const index = this.messages.findIndex(m => m.id === assistantMessage.id);
+                                            if (index !== -1) {
+                                                this.messages[index] = { ...assistantMessage };
+                                            }
+                                            this.loading = false;
+                                        }
+                                    } catch (e) {
+                                        console.error('Error parsing SSE data:', e, line);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error in stream:', error);
+                        this.loading = false;
+                    }
+                },
+                
+                // Utility Methods
+                toggleLayout() {
+                    this.documentScrollMode = !this.documentScrollMode;
+                    if (this.documentScrollMode) {
+                        document.body.classList.add('document-scroll');
+                        // Save preference
+                        localStorage.setItem('scrollMode', 'document');
+                    } else {
+                        document.body.classList.remove('document-scroll');
+                        localStorage.setItem('scrollMode', 'fixed');
+                    }
+                },
+
+                logout() {
+                    localStorage.removeItem('authToken');
+                    document.getElementById('app-container').classList.add('hidden');
+                    document.getElementById('login-container').classList.remove('hidden');
+                },
+
+                renderMarkdown(content) {
+                    if (!content) return '';
+                    try {
+                        // Parse markdown to HTML
+                        const html = marked.parse(content);
+                        // Sanitize HTML to prevent XSS attacks
+                        return DOMPurify.sanitize(html);
+                    } catch (err) {
+                        console.error('Markdown parsing error:', err);
+                        // Fallback to escaped text if markdown parsing fails
+                        return content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    }
+                },
+
+                formatDate(dateString) {
+                    return new Date(dateString).toLocaleDateString();
+                },
+
+                formatTime(dateString) {
+                    return new Date(dateString).toLocaleTimeString();
+                }
+            }
+        }
+    </script>
+</body>
+</html>

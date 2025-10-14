@@ -1,0 +1,7 @@
+.aider*
+frontend/.env
+venv
+venv/*/*
+**/__pycache__
+backend/.env
+backend/htmlcov

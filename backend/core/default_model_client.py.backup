@@ -1,0 +1,210 @@
+"""
+Default model client implementation using OpenAI SDK directly.
+Uses llmio only for function_parser to auto-generate tool specs.
+Can be overridden by plugins.
+"""
+from typing import List, Dict, Any, AsyncGenerator
+from openai import AsyncOpenAI
+import os
+import logging
+from datetime import datetime
+import asyncio
+
+logger = logging.getLogger("skeleton.model_client")
+
+class DefaultModelClient:
+    """Default model client using llmio - can be overridden by plugins"""
+    
+    def get_priority(self) -> int:
+        """Default priority - plugins can override with higher priority"""
+        return 0
+    
+    def __init__(self):
+        # Initialize llmio clients for different providers
+        self.clients = {}
+        self.model_to_provider = {}  # Maps model names to their provider
+
+        # OpenAI client with custom base URL support
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            openai_config = {"api_key": openai_key}
+
+            # Support custom base URL for LiteLLM proxy or other OpenAI-compatible APIs
+            openai_base_url = os.getenv("OPENAI_BASE_URL")
+            if openai_base_url:
+                openai_config["base_url"] = openai_base_url
+                logger.info(f"Using custom OpenAI base URL: {openai_base_url}")
+
+            try:
+                self.clients["openai"] = OpenAIClient(**openai_config)
+                logger.info(f"OpenAI client initialized successfully (API key: {openai_key[:8]}..., base_url: {openai_base_url or 'default'})")
+            except Exception as e:
+                logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
+        else:
+            logger.warning("No OPENAI_API_KEY found in environment")
+
+        # Gemini client
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        if gemini_key:
+            try:
+                self.clients["gemini"] = GeminiClient(api_key=gemini_key)
+                logger.info(f"Gemini client initialized successfully (API key: {gemini_key[:8]}...)")
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini client: {e}", exc_info=True)
+        else:
+            logger.info("No GEMINI_API_KEY found, skipping Gemini client")
+
+        logger.info(f"Initialized {len(self.clients)} provider client(s): {list(self.clients.keys())}")
+
+        # Default model if none specified
+        self.default_model = "gpt-3.5-turbo"
+        
+    def get_available_models(self) -> List[str]:
+        """Return list of available models from configured providers"""
+        logger.info("Getting available models...")
+        models = []
+        self.model_to_provider.clear()  # Reset the mapping
+
+        # Get models from each configured provider
+        for provider, client in self.clients.items():
+            logger.info(f"Checking models for provider: {provider}")
+            try:
+                if hasattr(client, 'list_models'):
+                    logger.info(f"Provider {provider} has list_models method, calling it...")
+                    provider_models = client.list_models()
+                    logger.info(f"Provider {provider} returned {len(provider_models)} models: {provider_models}")
+                    models.extend(provider_models)
+                    # Map each model to its provider
+                    for model in provider_models:
+                        self.model_to_provider[model] = provider
+                else:
+                    logger.info(f"Provider {provider} does not have list_models method, using fallback")
+                    # Fallback to known models for providers that don't support listing
+                    fallback_models = self._get_fallback_models(provider)
+                    logger.info(f"Using fallback models for {provider}: {fallback_models}")
+                    models.extend(fallback_models)
+                    for model in fallback_models:
+                        self.model_to_provider[model] = provider
+            except Exception as e:
+                logger.error(f"Error fetching models from {provider}: {e}", exc_info=True)
+                # Fallback to known models on error
+                fallback_models = self._get_fallback_models(provider)
+                logger.warning(f"Using fallback models for {provider} due to error: {fallback_models}")
+                models.extend(fallback_models)
+                for model in fallback_models:
+                    self.model_to_provider[model] = provider
+
+        logger.info(f"Total models available: {len(models)}")
+        return models
+    
+    def _get_fallback_models(self, provider: str) -> List[str]:
+        """Get fallback models for a provider"""
+        if provider == "openai":
+            return [
+                "gpt-4",
+                "gpt-4-turbo", 
+                "gpt-3.5-turbo",
+                "gpt-4o",
+                "gpt-4o-mini"
+            ]
+        elif provider == "gemini":
+            return [
+                "gemini-1.5-pro",
+                "gemini-1.5-flash",
+                "gemini-pro"
+            ]
+        return []
+    
+    def _get_client_for_model(self, model: str) -> Any:
+        """Get the appropriate client for a given model using the mapping"""
+        provider = self.model_to_provider.get(model)
+        if provider:
+            return self.clients.get(provider)
+        
+        # If model not found in mapping, try to infer from available clients
+        # This handles cases where models were added dynamically
+        for provider, client in self.clients.items():
+            try:
+                if hasattr(client, 'list_models'):
+                    available_models = client.list_models()
+                    if model in available_models:
+                        self.model_to_provider[model] = provider
+                        return client
+            except Exception:
+                continue
+        
+        # Default to OpenAI if available and model not found
+        return self.clients.get("openai")
+    
+    async def generate_response(
+        self, 
+        messages: List[Dict[str, Any]], 
+        model: str = None,
+        system_prompt: str = "default"
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Generate streaming response using llmio"""
+        
+        if model is None:
+            model = self.default_model
+            
+        # Get the appropriate client for this model
+        client = self._get_client_for_model(model)
+        
+        if not client:
+            yield {
+                "event": "error",
+                "data": {
+                    "message": f"No API key configured for model: {model}",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+            return
+        
+        # Convert messages to llmio format
+        llmio_messages = []
+        
+        # Add system prompt if provided
+        if system_prompt and system_prompt != "default":
+            llmio_messages.append(Message(role="system", content=system_prompt))
+        
+        # Convert history messages
+        for msg in messages:
+            role = msg.get("role")
+            if role in ["user", "assistant"]:
+                llmio_messages.append(Message(role=role, content=msg.get("content", "")))
+        
+        # Stream tokens
+        try:
+            # Use llmio to stream response
+            async for token in client.stream(
+                messages=llmio_messages,
+                model=model,
+                temperature=0.7,
+                max_tokens=2000
+            ):
+                yield {
+                    "event": "message_tokens",
+                    "data": {
+                        "content": token,
+                        "timestamp": datetime.now().isoformat(),
+                        "model": model
+                    }
+                }
+            
+            # Send end of stream
+            yield {
+                "event": "stream_end",
+                "data": {
+                    "timestamp": datetime.now().isoformat(),
+                    "model": model
+                }
+            }
+            
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": {
+                    "message": f"Error generating response: {str(e)}",
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
