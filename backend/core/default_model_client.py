@@ -4,12 +4,18 @@ Uses llmio only for function_parser to auto-generate tool specs.
 Can be overridden by plugins.
 """
 from typing import List, Dict, Any, AsyncGenerator
-from openai import AsyncOpenAI
 import os
 import logging
 from datetime import datetime
 import asyncio
 from .protocols import ModelPlugin
+
+try:
+    from openai import AsyncOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    logging.getLogger("skeleton.model_client").warning("OpenAI package not available - model client will fail")
 
 logger = logging.getLogger("skeleton.model_client")
 
@@ -45,11 +51,17 @@ class DefaultModelClient():
                 logger.info(f"OpenAI client initialized (API key: {openai_key[:8]}..., base_url: {openai_base_url})")
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
+                self.client = None
         else:
-            logger.error("No OPENAI_API_KEY found in environment")
+            logger.error("🚨 NO OPENAI_API_KEY CONFIGURED 🚨")
+            logger.error("The OpenAI API key is missing from your environment configuration.")
+            logger.error("Please set the OPENAI_API_KEY environment variable.")
+            logger.error("Example: export OPENAI_API_KEY='your-api-key-here'")
+            logger.error("Or add it to your .env file: OPENAI_API_KEY=your-api-key-here")
+            self.client = None
 
         # Default model if none specified
-        self.default_model = "gpt-3.5-turbo"
+        self.default_model = "MODELS NOT AVAILABLE"
 
     async def get_available_models(self) -> List[str]:
         """Return list of available models from the configured API"""
@@ -62,8 +74,11 @@ class DefaultModelClient():
             logger.info(f"Client API key (first 8 chars): {str(self.client.api_key)[:8]}...")
 
         if not self.client:
-            logger.error("No OpenAI client initialized, returning empty model list")
-            return []
+            logger.error("🚨 NO OPENAI_API_KEY CONFIGURED - MODEL CLIENT DISABLED 🚨")
+            logger.error("Cannot fetch models without API key configuration.")
+            logger.error("Please set OPENAI_API_KEY environment variable.")
+            logger.error("Example: export OPENAI_API_KEY='your-api-key-here'")
+            return ["MODELS NOT AVAILABLE"]
 
         try:
             # Return cached models if available
@@ -105,11 +120,7 @@ class DefaultModelClient():
         """Get fallback models when API listing fails"""
         logger.warning("Using hardcoded fallback model list")
         fallback = [
-            "gpt-4",
-            "gpt-4-turbo",
-            "gpt-3.5-turbo",
-            "gpt-4o",
-            "gpt-4o-mini"
+            "MODELS NOT AVAILABLE"
         ]
         logger.info(f"Fallback models: {fallback}")
         return fallback
@@ -137,7 +148,7 @@ class DefaultModelClient():
             yield {
                 "event": "error",
                 "data": {
-                    "message": "No API key configured",
+                    "message": "🚨 NO OPENAI_API_KEY CONFIGURED 🚨 Please set the OPENAI_API_KEY environment variable to use the model client.",
                     "timestamp": datetime.now().isoformat()
                 }
             }

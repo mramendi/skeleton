@@ -23,6 +23,7 @@ Current status:
 - [Project manifesto](skeleton-manifesto-v1.md)
 - [Test suite documentation](backend/tests/README.md)
 - [Explanation of the duck typing protocol system for plugins](protocol_explanation.md)
+- The `backend/docs` directory contains explanations of backend protocols and plugins in more detail
 
 ## Features
 

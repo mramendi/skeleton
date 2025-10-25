@@ -268,8 +268,11 @@ class YamlFileAuthPlugin():
         except jwt.ExpiredSignatureError:
             logger.warning("Token verification failed: token has expired.")
             return None
-        except Exception as e:  # TODO consider something more specific; jwt.JWTError does not exist
+        except jwt.PyJWTError as e:
             logger.warning(f"Token verification failed: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"Token verification failed with unexpected error: {e}")
             return None
 
     def request_allowed(self, username: str, model_name: str) -> bool:
