@@ -64,66 +64,105 @@ class SQLiteStorePlugin():
         if self._write_conn:
             return
 
-        # Slow path: Initialize connection and core tables
+        # Slow path: Initialize connection and core tables with retry logic
         async with self._init_lock:
             # Double-check after acquiring lock
             if self._write_conn is None:
-                logger.info(f"Initializing new shared connection to {self.db_path}")
-                try:
-                    conn = await aiosqlite.connect(self.db_path)
+                max_retries = 7
+                base_delay = 0.02   # 20ms base delay
+                max_delay = 2.0     # 2000ms max delay
 
-                    # --- Enable PRAGMAs (once per connection) ---
-                    await conn.execute("PRAGMA foreign_keys = ON;")
-                    await conn.execute("PRAGMA journal_mode=WAL;")
-                    # Commit PRAGMAs immediately
-                    await conn.commit()
-                    logger.info("Enabled WAL mode and foreign keys.")
-
-                    # --- Perform one-time table creation within a transaction ---
-                    await conn.execute("BEGIN")
+                for attempt in range(max_retries):
                     try:
-                        # Create stores table if it's not there
-                        await conn.execute('''
-                            CREATE TABLE IF NOT EXISTS _stores (
-                                name TEXT PRIMARY KEY,
-                                schema_json TEXT NOT NULL,
-                                cacheable INTEGER NOT NULL DEFAULT 0,
-                                created_at TEXT NOT NULL
-                            )
-                        ''')
+                        logger.info(f"Initializing new shared connection to {self.db_path} (attempt {attempt + 1}/{max_retries})")
+                        conn = await aiosqlite.connect(self.db_path)
 
-                        # --- Commit ---
+                        # --- Enable PRAGMAs (once per connection) ---
+                        await conn.execute("PRAGMA foreign_keys = ON;")
+                        await conn.execute("PRAGMA journal_mode=WAL;")
+                        # Commit PRAGMAs immediately
                         await conn.commit()
-                        logger.info("Core database tables initialized (_stores).")
-                        # Save the connection before releasing the lock
-                        self._write_conn = conn
+                        logger.info("Enabled WAL mode and foreign keys.")
+
+                        # --- Perform one-time table creation within a transaction ---
+                        await conn.execute("BEGIN IMMEDIATE")  # Use BEGIN IMMEDIATE to acquire write lock immediately
+                        try:
+                            # Create stores table if it's not there
+                            await conn.execute('''
+                                CREATE TABLE IF NOT EXISTS _stores (
+                                    name TEXT PRIMARY KEY,
+                                    schema_json TEXT NOT NULL,
+                                    cacheable INTEGER NOT NULL DEFAULT 0,
+                                    created_at TEXT NOT NULL
+                                )
+                            ''')
+
+                            # --- Commit ---
+                            await conn.commit()
+                            logger.info("Core database tables initialized (_stores).")
+                            # Save the connection before releasing the lock
+                            self._write_conn = conn
+                        except Exception as e:
+                            logger.error("Exception in initial transaction - rolling back and closing")
+                            await conn.rollback()
+                            await conn.close()
+                            raise
+
+                        # the transaction has completed and the WRITE connection is set up
+                        # now set up the READ connection
+                        db_uri = f"file:{self.db_path}?mode=ro"
+                        logger.info(f"Initializing new shared READ-ONLY connection using URI: {db_uri}")
+                        # Connect using the URI and uri=True
+                        self._read_conn = await aiosqlite.connect(db_uri, uri=True)
+
+                        # Success - break out of retry loop
+                        break
+
+                    except aiosqlite.OperationalError as e:
+                        if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                            # Calculate exponential backoff with jitter
+                            delay = min(base_delay * (2 ** attempt) + random.uniform(0, 0.001), max_delay)
+                            logger.warning(f"Database locked during init, retrying in {delay:.3f}s (attempt {attempt + 1}/{max_retries})")
+                            # Clean up any partial connection
+                            if 'conn' in locals():
+                                try:
+                                    await conn.close()
+                                except Exception:
+                                    pass
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            # Re-raise the error if it's not a lock error or we've exhausted retries
+                            logger.error(f"Database initialization failed after {attempt + 1} attempts: {e}")
+                            raise RuntimeError(f"Failed to initialize database after {attempt + 1} attempts: {e}")
+
                     except Exception as e:
-                        logger.error("Exception in intital transaction - rolling back and closing")
-                        await conn.rollback()
-                        await conn.close()
+                        logger.error(f"Unexpected error during database initialization: {e}")
+                        # Clean up any partial connection
+                        if 'conn' in locals():
+                            try:
+                                await conn.close()
+                            except Exception:
+                                pass
                         raise
 
-                    # the transaction has completed and the WRITE connection is set up
-                    # now set up the READ connection
-                    db_uri = f"file:{self.db_path}?mode=ro"
-                    logger.info(f"Initializing new shared READ-ONLY connection using URI: {db_uri}")
-                    # Connect using the URI and uri=True
-                    self._read_conn = await aiosqlite.connect(db_uri, uri=True)
+                else:
+                    # This executes if the for loop completes without breaking (all retries exhausted)
+                    raise RuntimeError(f"Failed to initialize database after {max_retries} attempts due to database locking")
 
-
-
-                except aiosqlite.Error as e:
-                    logger.error(
-                        f"Failed during initial database setup: {e}"
-                        f"If {self.db_path}-wal exists, delete it and retry"
-                    )
-                    # Clean up connections if setup failed but one or both connections were somehow set
-                    if self._write_conn:
-                        await self._write_conn.close()
-                        self._write_conn = None
+                # Clean up connections if setup failed but one or both connections were somehow set
+                if self._write_conn is None:  # Only clean up if initialization failed
+                    if 'conn' in locals():
+                        try:
+                            await conn.close()
+                        except Exception:
+                            pass
                     if self._read_conn:
-                        await self._read_conn.close()
-                        self._read_conn = None
+                        try:
+                            await self._read_conn.close()
+                        except Exception:
+                            pass
+                    self._read_conn = None
                     raise RuntimeError("Failed to obtain database connection after initialization attempt.")
 
     async def _get_read_db(self) -> aiosqlite.Connection:
