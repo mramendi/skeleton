@@ -128,24 +128,10 @@ class PluginLoader:
     ------------------
     Tools support two implementation styles:
 
-    1. Class-based (legacy):
-       class WeatherTool:
-           def get_schema(self) -> dict: ...
-           async def execute(self, arguments: dict) -> Any: ...
+    1. Class-based (legacy): Classes implementing ToolPlugin protocol
+    2. Function-based (recommended): Plain Python functions with type hints
 
-    2. Function-based (recommended):
-       def get_weather(location: str, unit: str = "celsius") -> dict:
-           '''Get weather for a location.
-
-           Args:
-               location: City name
-               unit: Temperature unit
-           '''
-           return {"temp": 20, "unit": unit}
-
-    Function-based tools are auto-converted to OpenAI function schemas using
-    llmio.function_parser, which generates Pydantic models from type hints and
-    validates arguments automatically.
+    Function-based tools are auto-converted using llmio.function_parser.
     """
     
     def __init__(self, plugins_dir: str = "plugins"):
@@ -156,51 +142,138 @@ class PluginLoader:
 
     def load_plugins(self):
         """Load all plugins from plugins directory"""
+        logger.info(f"PluginLoader: Loading plugins from {self.plugins_dir}")
+        
         if not self.plugins_dir.exists():
+            logger.warning(f"PluginLoader: Plugins directory {self.plugins_dir} does not exist")
             return
 
+        logger.info("PluginLoader: Directory exists, starting plugin loading...")
+
         # Load core plugins
+        logger.info("Loading core plugins...")
         self._load_core_plugins()
+        logger.info(f"Loaded {len(self.core_plugins)} core plugin types: {list(self.core_plugins.keys())}")
 
         # Load function plugins
+        logger.info("Loading function plugins...")
         self._load_function_plugins()
+        logger.info(f"Loaded {len(self.function_plugins)} function plugins")
 
         # Load tool plugins
+        logger.info("Loading tool plugins...")
         self._load_tool_plugins()
+        logger.info(f"Loaded {len(self.tool_plugins)} tool plugins")
+        
+        logger.info("PluginLoader: All plugin loading completed")
 
     def _load_core_plugins(self):
         """
         Load core plugins that can override default implementations.
         
-        Finds classes implementing CorePlugin protocols and groups them by type.
+        This method discovers and loads core plugins from the plugins/core/ directory.
+        Core plugins are special plugins that can replace the default implementations
+        of core system components (auth, model, thread, store).
+        
+        The loading process works as follows:
+        1. Scan plugins/core/ directory for .py files (excluding __init__.py)
+        2. For each file, dynamically import it as a Python module
+        3. Inspect the module for classes that implement the CorePlugin interface
+        4. Instantiate each plugin class and group them by their declared role
+        5. Sort plugins within each role by priority (highest first)
+        
+        Plugin classes are identified by having both get_role() and get_priority() methods.
+        The get_role() method declares which system component the plugin wants to replace.
+        The get_priority() method determines which plugin wins when multiple plugins target the same role.
         """
         core_dir = self.plugins_dir / "core"
         if not core_dir.exists():
+            logger.debug("Core plugins directory not found - no core plugins to load")
             return
 
+        logger.info(f"Loading core plugins from: {core_dir}")
+
+        # Step 1: Scan for Python files in the core directory
         for plugin_file in core_dir.glob("*.py"):
+            # Skip special files like __init__.py
             if plugin_file.name.startswith("__"):
+                logger.debug(f"Skipping special file: {plugin_file.name}")
                 continue
 
+            logger.debug(f"Processing core plugin file: {plugin_file}")
+
+            # Step 2: Dynamically import the Python file as a module
+            # Create a unique module name to avoid conflicts
             module_name = f"plugin_{plugin_file.stem}"
             spec = importlib.util.spec_from_file_location(module_name, plugin_file)
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            
+            try:
+                # Execute the module to load its classes into memory
+                spec.loader.exec_module(module)
+                logger.debug(f"Successfully imported module: {module_name}")
+            except Exception as e:
+                logger.error(f"Failed to import module {module_name}: {e}", exc_info=True)
+                continue
 
-            # Find plugin classes in module
+            # Step 3: Inspect the module for plugin classes
             for name, obj in inspect.getmembers(module, inspect.isclass):
-                if hasattr(obj, 'get_priority') and not name.startswith("_"):
+                # Skip private classes and classes imported from other modules
+                if name.startswith("_") or obj.__module__ != module.__name__:
+                    continue
+
+                logger.debug(f"Found class in module: {name}")
+
+                # Step 4: Check if class implements CorePlugin interface
+                # Use isinstance() for proper duck typing against the CorePlugin protocol
+                try:
+                    # Try to instantiate and check if it implements CorePlugin
                     plugin_instance = obj()
-                    plugin_type = name.lower().replace('plugin', '')
+                    if isinstance(plugin_instance, CorePlugin):
+                        # Get the role this plugin wants to handle
+                        role = plugin_instance.get_role()
+                        
+                        logger.debug(f"Plugin '{name}' declares role: '{role}'")
 
-                    if plugin_type not in self.core_plugins:
-                        self.core_plugins[plugin_type] = []
+                        # Step 5: Group plugins by their role
+                        # Initialize the list for this role if it doesn't exist
+                        if role not in self.core_plugins:
+                            self.core_plugins[role] = []
 
-                    self.core_plugins[plugin_type].append(plugin_instance)
+                        # Add the plugin instance to the appropriate role group
+                        self.core_plugins[role].append(plugin_instance)
+                        logger.info(f"Loaded core plugin '{name}' for role '{role}' (priority: {plugin_instance.get_priority()})")
 
-        # Sort plugins by priority - highest priority wins
-        for plugin_type in self.core_plugins:
-            self.core_plugins[plugin_type].sort(key=lambda p: p.get_priority(), reverse=True)
+                except Exception as e:
+                    logger.error(f"Failed to instantiate or validate plugin class '{name}': {e}", exc_info=True)
+                else:
+                    logger.debug(f"Class '{name}' does not implement CorePlugin protocol - skipping")
+
+        # Step 6: Sort plugins within each role by priority
+        # Higher priority plugins come first (will be selected as the active plugin)
+        for role in self.core_plugins:
+            plugins_for_role = self.core_plugins[role]
+            plugins_for_role.sort(key=lambda p: p.get_priority(), reverse=True)
+            
+            # Log the final priority order for debugging
+            plugin_names = [f"{p.__class__.__name__}({p.get_priority()})" for p in plugins_for_role]
+            logger.debug(f"Core plugins for role '{role}' (sorted by priority): {plugin_names}")
+            
+            # Check for priority ties (non-fatal error)
+            if len(plugins_for_role) > 1:
+                top_priority = plugins_for_role[0].get_priority()
+                top_priority_plugins = [p for p in plugins_for_role if p.get_priority() == top_priority]
+                if len(top_priority_plugins) > 1:
+                    tied_plugin_names = [p.__class__.__name__ for p in top_priority_plugins]
+                    logger.error(
+                        f"PRIORITY TIE for role '{role}': {len(top_priority_plugins)} plugins share "
+                        f"the highest priority ({top_priority}): {tied_plugin_names}. "
+                        f"The first one in the list will be used, but this may cause unpredictable behavior."
+                    )
+            
+            # The first plugin in the list will be the active one
+            active_plugin = plugins_for_role[0]
+            logger.info(f"Selected active plugin for role '{role}': {active_plugin.__class__.__name__}")
 
     def _load_function_plugins(self):
         """

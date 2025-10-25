@@ -3,6 +3,9 @@ Test Auth Plugin - Provides hardcoded test users for testing without real auth.
 
 This plugin provides deterministic authentication for tests with known users
 and tokens. Passwords are simple and tokens are predictable for easy testing.
+
+IMPORTANT: the sha256 hash is used here for pure test purposes. DO NOT USE
+THE SHA256 HASH IN PRODUCTION
 """
 from typing import Dict, Any, Optional
 import hashlib

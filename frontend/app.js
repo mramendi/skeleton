@@ -33,6 +33,15 @@ function loginApp() {
                     localStorage.setItem('authToken', data.access_token);
                     document.getElementById('app-container').classList.remove('hidden');
                     document.getElementById('login-container').classList.add('hidden');
+                    // Initialize the chat app directly after login
+                    setTimeout(async () => {
+                        // Find the chat app instance and initialize it
+                        const appContainer = document.getElementById('app-container');
+                        if (appContainer && appContainer._x_dataStack && appContainer._x_dataStack[0]) {
+                            const chatApp = appContainer._x_dataStack[0];
+                            await chatApp.init();
+                        }
+                    }, 100);
                 } else {
                     this.error = data.detail || 'Login failed';
                 }
@@ -58,21 +67,32 @@ function chatApp() {
         currentSystemPrompt: 'default',
         newMessage: '',
         searchQuery: '',
-        loading: false,
+        loadingStates: {}, // Per-thread loading states
         eventSource: null,
         documentScrollMode: false,
         mobileMenuOpen: false,
+        offline: false,
 
         // Initialization
         async init() {
             console.log('[DEBUG] Initializing chatApp...');
             const token = localStorage.getItem('authToken');
+            console.log('[DEBUG] Token check:', token ? 'present' : 'missing');
+            
             if (!token) {
                 console.log('[DEBUG] No auth token, showing login');
                 document.getElementById('app-container').classList.add('hidden');
                 document.getElementById('login-container').classList.remove('hidden');
                 return;
             }
+            
+            // Ensure we're showing the app container
+            document.getElementById('app-container').classList.remove('hidden');
+            document.getElementById('login-container').classList.add('hidden');
+            
+            // Small delay to ensure DOM is ready
+            await new Promise(resolve => setTimeout(resolve, 100));
+            console.log('[DEBUG] Token confirmed, proceeding with data load...');
 
             // Load scroll mode preference (desktop only)
             const isMobile = window.matchMedia('(max-width: 768px)').matches;
@@ -101,11 +121,24 @@ function chatApp() {
                 gfm: true      // GitHub Flavored Markdown
             });
 
-            console.log('[DEBUG] Loading models and threads...');
-            await this.loadModels();
-            await this.loadThreads();
-            console.log('[DEBUG] Initialization complete');
+            // Only load data if we have a valid token
+            try {
+                console.log('[DEBUG] Loading models and threads...');
+                await this.loadModels();
+                await this.loadThreads();
+                console.log('[DEBUG] Initialization complete');
+            } catch (error) {
+                console.error('[DEBUG] Failed to load initial data:', error);
+                // If we get auth error, clear token and show login
+                if (error.message && error.message.includes('Authentication required')) {
+                    console.log('[DEBUG] Invalid token, clearing and showing login');
+                    localStorage.removeItem('authToken');
+                    document.getElementById('app-container').classList.add('hidden');
+                    document.getElementById('login-container').classList.remove('hidden');
+                }
+            }
         },
+
 
         // API Methods
         async apiCall(url, options = {}) {
@@ -129,30 +162,44 @@ function chatApp() {
 
         async loadModels() {
             try {
+                console.log('[DEBUG] Loading models...');
                 const response = await this.apiCall('/api/v1/models');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 this.models = await response.json();
                 console.log('[DEBUG] Loaded models:', this.models);
                 if (this.models.length > 0) {
                     this.currentModel = this.models[0];
                     console.log('[DEBUG] Set current model to:', this.currentModel);
                 } else {
-                    console.error('[ERROR] No models returned from API');
-                    alert('Error: No models available. Check backend logs.');
+                    console.warn('[WARNING] No models returned from API');
+                    this.models = ['gpt-3.5-turbo']; // Fallback model
+                    this.currentModel = this.models[0];
                 }
             } catch (error) {
                 console.error('Failed to load models:', error);
-                alert('Failed to load models: ' + error.message);
+                // Don't show alert, just use fallback
+                this.models = ['gpt-3.5-turbo']; // Fallback model
+                this.currentModel = this.models[0];
+                console.log('[DEBUG] Using fallback model due to error:', error.message);
             }
         },
 
         async loadThreads() {
             try {
+                console.log('[DEBUG] Loading threads...');
                 const response = await this.apiCall('/api/v1/threads');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 this.threads = await response.json();
                 console.log('[DEBUG] Loaded threads:', this.threads.length, 'threads');
             } catch (error) {
                 console.error('Failed to load threads:', error);
-                alert('Failed to load threads: ' + error.message);
+                // Don't show alert, just start with empty threads
+                this.threads = [];
+                console.log('[DEBUG] Starting with empty threads due to error:', error.message);
             }
         },
 
@@ -176,11 +223,26 @@ function chatApp() {
             this.currentThreadId = null;
             this.currentThreadTitle = 'New Chat';
             this.messages = [];
+            // Clear loading state for new thread
+            this.setLoading(false);
         },
 
         async selectThread(threadId, title) {
             this.currentThreadId = threadId;
             this.currentThreadTitle = title;
+            
+            // Try to switch model to the thread's model
+            const thread = this.threads.find(t => t.id === threadId);
+            if (thread && thread.model) {
+                // Check if the model exists in available models
+                if (this.models.includes(thread.model)) {
+                    this.currentModel = thread.model;
+                    console.log(`[DEBUG] Switched model to thread model: ${thread.model}`);
+                } else {
+                    console.log(`[DEBUG] Thread model ${thread.model} not available, keeping current: ${this.currentModel}`);
+                }
+            }
+            
             await this.loadThreadMessages(threadId);
         },
 
@@ -229,6 +291,16 @@ function chatApp() {
                 const clientHeight = document.documentElement.clientHeight;
                 const scrollHeight = document.documentElement.scrollHeight;
 
+                // Guard against scrollHeight being 0 (iOS Safari edge case)
+                if (!scrollHeight) {
+                    return true;
+                }
+
+                // Guard against NaN values
+                if (!isFinite(scrollTop) || !isFinite(clientHeight) || !isFinite(scrollHeight)) {
+                    return true;
+                }
+
                 const atBottom = scrollTop + clientHeight >= scrollHeight - 200; // 200px threshold
 
                 if (Math.random() < 0.1) {
@@ -239,15 +311,24 @@ function chatApp() {
                 // Desktop check remains the same
                 if (!this.$refs.messagesContainer) return true;
                 const el = this.$refs.messagesContainer;
-                return el.scrollTop + el.clientHeight >= el.scrollHeight - 100;
+                const scrollTop = el.scrollTop;
+                const clientHeight = el.clientHeight;
+                const scrollHeight = el.scrollHeight;
+
+                // Guard against NaN values
+                if (!isFinite(scrollTop) || !isFinite(clientHeight) || !isFinite(scrollHeight)) {
+                    return true;
+                }
+
+                return scrollTop + clientHeight >= scrollHeight - 100;
             }
         },
 
         // Message Handling
         async sendMessage() {
-            if (!this.newMessage.trim() || this.loading) return;
+            if (!this.newMessage.trim() || this.isLoading()) return;
 
-            this.loading = true;
+            this.setLoading(true);
             console.log('[DEBUG] Sending message...');
 
             // Add user message
@@ -348,7 +429,7 @@ function chatApp() {
                                     });
                                 } else if (data.event === 'stream_end') {
                                     console.log('[DEBUG] Stream ended. Final message length:', assistantMessage.content.length);
-                                    this.loading = false;
+                                    this.setLoading(false);
                                     // Refresh threads if new thread was created
                                     await this.loadThreads();
                                 } else if (data.event === 'error') {
@@ -358,7 +439,7 @@ function chatApp() {
                                     if (index !== -1) {
                                         this.messages[index] = { ...assistantMessage };
                                     }
-                                    this.loading = false;
+                                    this.setLoading(false);
                                 }
                             } catch (e) {
                                 console.error('Error parsing SSE data:', e, line);
@@ -368,7 +449,8 @@ function chatApp() {
                 }
             } catch (error) {
                 console.error('Error in stream:', error);
-                this.loading = false;
+                this.setLoading(false);
+                this.offline = true;
             }
         },
 
@@ -411,6 +493,17 @@ function chatApp() {
 
         formatTime(dateString) {
             return new Date(dateString).toLocaleTimeString();
+        },
+
+        // Loading state management methods
+        isLoading() {
+            return this.loadingStates[this.currentThreadId] || false;
+        },
+
+        setLoading(loading) {
+            if (this.currentThreadId) {
+                this.loadingStates[this.currentThreadId] = loading;
+            }
         }
     }
 }

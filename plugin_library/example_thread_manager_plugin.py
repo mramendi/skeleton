@@ -1,19 +1,25 @@
 """
 Example thread manager plugin that demonstrates how to override default thread management.
 This plugin adds logging and could connect to a real database.
+
+UNSUPPORTED!! UNVERIFIED AI-GENERATED CODE
 """
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 import json
+import logging
+
+logger = logging.getLogger("skeleton.plugins.core.example-thread-manager")
+
 
 class ExampleThreadManagerPlugin:
     """Example thread manager plugin with enhanced logging and persistence"""
-    
+
     def get_priority(self) -> int:
         """Higher priority than default (which is 0)"""
         return 10
-    
+
     def __init__(self):
         # In-memory storage for demo (could be database in real implementation)
         self.threads = {}
@@ -23,9 +29,9 @@ class ExampleThreadManagerPlugin:
             "messages_added": 0,
             "searches_performed": 0
         }
-        
-        print("[ThreadManagerPlugin] Initialized with enhanced logging")
-    
+
+        logger.info("ThreadManagerPlugin initialized with enhanced logging")
+
     def _log_operation(self, operation: str, thread_id: str = None, details: Dict[str, Any] = None):
         """Log thread operations for debugging/monitoring"""
         log_entry = {
@@ -35,8 +41,8 @@ class ExampleThreadManagerPlugin:
             "details": details,
             "stats": self.stats.copy()
         }
-        print(f"[ThreadManagerPlugin] {json.dumps(log_entry)}")
-    
+        logger.debug(f"[ThreadManagerPlugin] {json.dumps(log_entry)}")
+
     def create_thread(self, title: str, model: str, system_prompt: str, user: str) -> str:
         """Create a new thread with logging and user isolation"""
         thread_id = str(uuid.uuid4())
@@ -62,7 +68,7 @@ class ExampleThreadManagerPlugin:
         self._log_operation("create_thread", thread_id, {"title": title, "model": model, "user": user})
 
         return thread_id
-    
+
     def get_threads(self, user: str, query: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get threads with optional search, logging, and user isolation"""
         self._log_operation("get_threads", details={"query": query, "user": user})
@@ -98,7 +104,7 @@ class ExampleThreadManagerPlugin:
         self._log_operation("get_threads_complete", details={"count": len(threads), "user": user})
 
         return threads
-    
+
     def get_thread_messages(self, thread_id: str, user: str) -> Optional[List[Dict[str, Any]]]:
         """Get messages with validation, logging, and user access control"""
         self._log_operation("get_thread_messages", thread_id, {"user": user})

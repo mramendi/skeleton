@@ -43,6 +43,11 @@
 
     <!-- Main App -->
     <div id="app-container" class="hidden" x-data="chatApp()" x-init="init()">
+        <!-- Offline Banner -->
+        <div x-show="offline" x-transition class="offline-banner">
+            <span>⚠️ Connection lost - messages may not send</span>
+            <button @click="offline = false" class="offline-close">×</button>
+        </div>
         <!-- Desktop Header -->
         <header class="header">
             <h1>Skeleton</h1>
@@ -162,9 +167,9 @@
                                   x-model="newMessage"
                                   placeholder="Type your message..."
                                   @keydown.enter.prevent="sendMessage"></textarea>
-                        <button type="submit" class="send-button" :disabled="loading">
-                            <span x-show="!loading">Send</span>
-                            <span x-show="loading">Sending...</span>
+                        <button type="submit" class="send-button" :disabled="isLoading()">
+                            <span x-show="!isLoading()">Send</span>
+                            <span x-show="isLoading()">Sending...</span>
                         </button>
                     </form>
                 </div>

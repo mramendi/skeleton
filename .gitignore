@@ -5,4 +5,9 @@ venv/*/*
 **/__pycache__
 backend/.env
 backend/htmlcov
-plugins/
+backend/skeleton.db*
+test
+skeleton.db*
+jwt.secret
+users.yaml
+

@@ -9,15 +9,23 @@ import os
 import logging
 from datetime import datetime
 import asyncio
+from .protocols import ModelPlugin
 
 logger = logging.getLogger("skeleton.model_client")
 
-class DefaultModelClient:
+class DefaultModelClient():
     """Default model client using OpenAI SDK - can be overridden by plugins"""
+
+    def get_role(self) -> str:
+        """Return the role string for this plugin"""
+        return "model"
 
     def get_priority(self) -> int:
         """Default priority - plugins can override with higher priority"""
         return 0
+
+    async def shutdown(self) -> None:
+        return
 
     def __init__(self):
         """Initialize OpenAI client (works with LiteLLM proxy for multi-provider support)"""
@@ -38,7 +46,7 @@ class DefaultModelClient:
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
         else:
-            logger.warning("No OPENAI_API_KEY found in environment")
+            logger.error("No OPENAI_API_KEY found in environment")
 
         # Default model if none specified
         self.default_model = "gpt-3.5-turbo"
@@ -54,7 +62,7 @@ class DefaultModelClient:
             logger.info(f"Client API key (first 8 chars): {str(self.client.api_key)[:8]}...")
 
         if not self.client:
-            logger.warning("No OpenAI client initialized, returning empty model list")
+            logger.error("No OpenAI client initialized, returning empty model list")
             return []
 
         try:

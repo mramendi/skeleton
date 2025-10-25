@@ -385,6 +385,30 @@ body {
     font-size: 0.9rem;
 }
 
+.offline-banner {
+    background: #ff9800;
+    color: white;
+    padding: 0.5rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
+    font-weight: 500;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+}
+
+.offline-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.25rem;
+    line-height: 1;
+}
+
 #app-container {
     display: flex;
     flex-direction: column;
