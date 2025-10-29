@@ -13,6 +13,9 @@
     <!-- HTML sanitization -->
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/static/skeleton-favicon.png">
+
     <!-- Application styles and scripts -->
     <link rel="stylesheet" href="/static/styles.css">
     <script src="/static/app.js" defer></script>
@@ -50,7 +53,7 @@
         </div>
         <!-- Desktop Header -->
         <header class="header">
-            <h1>Skeleton</h1>
+            <h1><img src="/static/skeleton-icon-72.png" alt="Skeleton" style="height: 40px; vertical-align: middle; margin-right: 0.5rem;">Skeleton</h1>
             <button @click="logout" class="send-button" style="padding: 0.5rem 1rem;">Logout</button>
         </header>
 

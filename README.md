@@ -20,6 +20,8 @@ Current status:
 - For any database changes, the SQLite data store can handle adding new fields but cannot handle destructive changes (such as changing a field's type or renaming a field). If such a change is required between versions, you may need to delete your skeleton.db file to start fresh. However we will aim to avoid such changes; if they happen, a very loud warning will be provided and the system will cleanly fail to start.
 - There is a test suite from an earlier stage of development, now out of date and significantly incomplete
 
+Note: the icon is taken from the Disney classic Skeleton Dance, which is, as widely reported, [now in the public domain](https://blog.archive.org/2025/01/13/public-domain-spotlight-the-skeleton-dance/).
+
 ## DOCUMENTATION
 
 - This file - introduction, usage instructions, extension instructions
