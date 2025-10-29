@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
 COPY main.py ./main.py
+COPY system_prompts.yaml ./system_prompts.yaml
 
 # Create data directory
 RUN mkdir -p /app/data

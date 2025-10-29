@@ -10,4 +10,5 @@ test
 skeleton.db*
 jwt.secret
 users.yaml
-
+plugins
+plugins/*

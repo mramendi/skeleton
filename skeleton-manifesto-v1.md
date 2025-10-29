@@ -16,7 +16,7 @@ One key design decisions is that all sources of truth are _on the backend_. Skel
 ----------------------------------------------------
 The back-end is a Python/FastAPI application built on a **formal calling contract** (`typing.Protocol`).
 
-Every module in the backend, except the FastAPI REST implementation itself (which is intentionally minimal), has a defined calling contract. This design enables any developer to replace one module by implementing the same contract; the new code can call other existing modules by following their contracts too, and so every single component becomes "pluggable". Whenever possible, "hot-plugging" overrides from the `plugins` directory is supported.
+Every module in the backend, except the FastAPI REST implementation itself (which is intentionally minimal), has a defined calling contract. This design enables any developer to replace one module by implementing the same contract; the new code can call other existing modules by following their contracts too, and so every single component becomes "pluggable". Whenever possible, "drop-in plugging" overrides from the `plugins` directory is supported (requires restart).
 
 The defined calling contract is also intended to avoid bloat; every module has _one_ function, expansion of functionality is done by new modules whenever possible while keeping every source file simple, and every module is expected to be well-documented too.
 
@@ -50,6 +50,9 @@ Plugin pages can be secured by requiring a valid user login. The core will provi
 ----------------------------------------------------
 ## API Contract (v1)
 ----------------------------------------------------
+
+**THE DESCTIPTION IS OUTDATED** updated API documentation pending. (The calls are valid but the event types etc are not)
+
 The software version is independent of the API version. The API contract is prefixed with `/api/v1` to signal a commitment to stability. UI-specific HTML endpoints are not versioned.
 
 | Method | Path | Description |
@@ -70,7 +73,7 @@ The software version is independent of the API version. The API contract is pref
 ----------------------------------------------------
 ## API Error Handling
 ----------------------------------------------------
-- **JSON API Errors:** Failed requests (`4xx` or `5xx`) will return a standard JSON body: `{"error": "A human-readable error message"}`.
+- **JSON API Errors:** Failed requests (`4xx` or `5xx`) will return the FastAPI standard JSON body: `{"detail": "A human-readable error message"}`.
 - **SSE Stream Errors:** If an error occurs mid-stream, the final event emitted will be `{"event": "error", "data": {"message": "Error description."}}` before the connection is closed.
 
 ----------------------------------------------------

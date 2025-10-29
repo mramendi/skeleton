@@ -61,6 +61,7 @@ function chatApp() {
         messages: [],
         threads: [],
         models: [],
+        systemPrompts: {},
         currentThreadId: null,
         currentThreadTitle: 'New Chat',
         currentModel: 'gpt-3.5-turbo',
@@ -78,18 +79,18 @@ function chatApp() {
             console.log('[DEBUG] Initializing chatApp...');
             const token = localStorage.getItem('authToken');
             console.log('[DEBUG] Token check:', token ? 'present' : 'missing');
-            
+
             if (!token) {
                 console.log('[DEBUG] No auth token, showing login');
                 document.getElementById('app-container').classList.add('hidden');
                 document.getElementById('login-container').classList.remove('hidden');
                 return;
             }
-            
+
             // Ensure we're showing the app container
             document.getElementById('app-container').classList.remove('hidden');
             document.getElementById('login-container').classList.add('hidden');
-            
+
             // Small delay to ensure DOM is ready
             await new Promise(resolve => setTimeout(resolve, 100));
             console.log('[DEBUG] Token confirmed, proceeding with data load...');
@@ -123,8 +124,9 @@ function chatApp() {
 
             // Only load data if we have a valid token
             try {
-                console.log('[DEBUG] Loading models and threads...');
+                console.log('[DEBUG] Loading models, system prompts, and threads...');
                 await this.loadModels();
+                await this.loadSystemPrompts();
                 await this.loadThreads();
                 console.log('[DEBUG] Initialization complete');
             } catch (error) {
@@ -158,6 +160,35 @@ function chatApp() {
             }
 
             return response;
+        },
+
+        async loadSystemPrompts() {
+            try {
+                console.log('[DEBUG] Loading system prompts...');
+                const response = await this.apiCall('/api/v1/system_prompts');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                this.systemPrompts = await response.json();
+                console.log('[DEBUG] Loaded system prompts:', this.systemPrompts);
+
+                // Set default to first available prompt if current selection is not found
+                if (!this.systemPrompts[this.currentSystemPrompt]) {
+                    const availableKeys = Object.keys(this.systemPrompts);
+                    if (availableKeys.length > 0) {
+                        this.currentSystemPrompt = availableKeys[0];
+                        console.log('[DEBUG] Set system prompt to first available:', this.currentSystemPrompt);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load system prompts:', error);
+                // Fallback to basic prompts
+                this.systemPrompts = {
+                    'default': 'General purpose assistant',
+                    'zero': 'No system prompt'
+                };
+                console.log('[DEBUG] Using fallback system prompts due to error:', error.message);
+            }
         },
 
         async loadModels() {
@@ -220,7 +251,8 @@ function chatApp() {
 
         startNewThread() {
             // Clear current thread to start a new conversation
-            this.currentThreadId = null;
+            // Use a temporary ID for new threads until we get the real ID from server
+            this.currentThreadId = `temp-${Date.now()}`;
             this.currentThreadTitle = 'New Chat';
             this.messages = [];
             // Clear loading state for new thread
@@ -230,19 +262,37 @@ function chatApp() {
         async selectThread(threadId, title) {
             this.currentThreadId = threadId;
             this.currentThreadTitle = title;
-            
+
             // Try to switch model to the thread's model
             const thread = this.threads.find(t => t.id === threadId);
-            if (thread && thread.model) {
-                // Check if the model exists in available models
-                if (this.models.includes(thread.model)) {
-                    this.currentModel = thread.model;
-                    console.log(`[DEBUG] Switched model to thread model: ${thread.model}`);
-                } else {
-                    console.log(`[DEBUG] Thread model ${thread.model} not available, keeping current: ${this.currentModel}`);
+            if (thread) {
+                // Handle model selection
+                if (thread.model) {
+                    // Check if the model exists in available models
+                    if (this.models.includes(thread.model)) {
+                        this.currentModel = thread.model;
+                        console.log(`[DEBUG] Switched model to thread model: ${thread.model}`);
+                    } else if (thread.model === "MODELS NOT AVAILABLE") {
+                        console.log(`[DEBUG] Thread model shows MODELS NOT AVAILABLE - API key issue detected`);
+                        this.currentModel = "MODELS NOT AVAILABLE";
+                    } else {
+                        console.log(`[DEBUG] Thread model ${thread.model} not available, keeping current: ${this.currentModel}`);
+                    }
+                }
+
+                // Handle system prompt selection
+                if (thread.system_prompt) {
+                    // Check if the system prompt exists in available prompts
+                    if (this.systemPrompts.hasOwnProperty(thread.system_prompt)) {
+                        this.currentSystemPrompt = thread.system_prompt;
+                        console.log(`[DEBUG] Switched system prompt to thread prompt: ${thread.system_prompt}`);
+                    } else {
+                        console.log(`[DEBUG] Thread system prompt ${thread.system_prompt} not available, using default`);
+                        this.currentSystemPrompt = "default";
+                    }
                 }
             }
-            
+
             await this.loadThreadMessages(threadId);
         },
 
@@ -250,10 +300,96 @@ function chatApp() {
             try {
                 const response = await this.apiCall(`/api/v1/threads/${threadId}/messages`);
                 const messages = await response.json();
-                this.messages = messages.map((msg, index) => ({
-                    ...msg,
-                    id: `${threadId}-${index}`
-                }));
+
+                // Group consecutive thinking and assistant messages, and tool messages by call_id
+                const groupedMessages = [];
+                let currentGroup = null;
+                let toolGroups = {};  // Track tool messages by call_id
+
+                for (let i = 0; i < messages.length; i++) {
+                    const msg = messages[i];
+
+                    // Handle tool messages with call_id - group by call_id
+                    if (msg.role === 'tool' && msg.type === 'tool_update' && msg.call_id) {
+                        // Close any active assistant group
+                        if (currentGroup) {
+                            currentGroup.content = currentGroup.segments
+                                .filter(s => s.type === 'message')
+                                .map(s => s.content)
+                                .join('');
+                            groupedMessages.push(currentGroup);
+                            currentGroup = null;
+                        }
+
+                        // Find or create tool group for this call_id
+                        if (!toolGroups[msg.call_id]) {
+                            toolGroups[msg.call_id] = {
+                                id: `tool-${msg.call_id}`,
+                                role: 'tool',
+                                content: '',
+                                timestamp: msg.timestamp,
+                                call_id: msg.call_id
+                            };
+                            groupedMessages.push(toolGroups[msg.call_id]);
+                        }
+                        // Append content to existing tool group
+                        toolGroups[msg.call_id].content += msg.content + '\n';
+                    }
+                    // If this is a thinking or assistant message and we have a current group
+                    else if ((msg.role === 'thinking' || msg.role === 'assistant') && currentGroup) {
+                        // Add as a segment to current group
+                        currentGroup.segments.push({
+                            type: msg.role === 'thinking' ? 'thinking' : 'message',
+                            content: msg.content || '',
+                            timestamp: msg.timestamp,
+                            isCollapsed: msg.role === 'thinking'  // Thinking segments start collapsed
+                        });
+                    }
+                    // If this is a thinking or assistant message and no current group, start a new group
+                    else if (msg.role === 'thinking' || msg.role === 'assistant') {
+                        currentGroup = {
+                            id: `${threadId}-${i}`,
+                            role: 'assistant',  // Combined group is always 'assistant'
+                            content: '',  // Will be built from segments
+                            timestamp: msg.timestamp,
+                            segments: [{
+                                type: msg.role === 'thinking' ? 'thinking' : 'message',
+                                content: msg.content || '',
+                                timestamp: msg.timestamp,
+                                isCollapsed: msg.role === 'thinking'  // Thinking segments start collapsed
+                            }]
+                        };
+                    }
+                    // If this is any other message type, close current group and add as separate message
+                    else {
+                        if (currentGroup) {
+                            // Build content from message segments
+                            currentGroup.content = currentGroup.segments
+                                .filter(s => s.type === 'message')
+                                .map(s => s.content)
+                                .join('');
+                            groupedMessages.push(currentGroup);
+                            currentGroup = null;
+                        }
+
+                        // Add non-assistant, non-tool message as separate bubble
+                        groupedMessages.push({
+                            ...msg,
+                            id: `${threadId}-${i}`
+                        });
+                    }
+                }
+
+                // Don't forget to add the last group if it exists
+                if (currentGroup) {
+                    currentGroup.content = currentGroup.segments
+                        .filter(s => s.type === 'message')
+                        .map(s => s.content)
+                        .join('');
+                    groupedMessages.push(currentGroup);
+                }
+
+                this.messages = groupedMessages;
                 this.$nextTick(() => {
                     this.scrollToBottom();
                 });
@@ -359,7 +495,10 @@ function chatApp() {
                 const token = localStorage.getItem('authToken');
                 const formData = new FormData();
                 formData.append('content', content);
-                if (this.currentThreadId) formData.append('thread_id', this.currentThreadId);
+                // Only send thread_id if it's a real thread (not a temporary one)
+                if (this.currentThreadId && !this.currentThreadId.startsWith('temp-')) {
+                    formData.append('thread_id', this.currentThreadId);
+                }
                 formData.append('model', this.currentModel);
                 formData.append('system_prompt', this.currentSystemPrompt);
 
@@ -379,15 +518,25 @@ function chatApp() {
                 const decoder = new TextDecoder();
                 let buffer = '';
 
-                // Create assistant message
-                let assistantMessage = {
-                    id: Date.now().toString() + '-assistant',
+                // --- FIX: Create an ID first ---
+                let assistantMessageId = Date.now().toString() + '-assistant';
+
+                // Create and push the assistant message
+                let plainAssistantMessage = {
+                    id: assistantMessageId,
                     role: 'assistant',
                     content: '',
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    segments: []  // Initialize segments array
                 };
-                this.messages.push(assistantMessage);
+                this.messages.push(plainAssistantMessage);
                 console.log('[DEBUG] Assistant message added. Total messages:', this.messages.length);
+
+                // Flag to track if a tool/function call has occurred
+                let toolCallOccurred = false;
+
+                // Track tool/function bubbles by call_id
+                let toolBubbles = {};  // call_id -> bubble_id mapping
 
                 // Read the stream
                 while (true) {
@@ -403,42 +552,172 @@ function chatApp() {
                             try {
                                 const data = JSON.parse(line.slice(6));
 
+                                // --- FIX: Find the reactive message from this.messages ---
+                                let assistantMessage = this.messages.find(m => m.id === assistantMessageId);
+
                                 if (data.event === 'thread_id') {
                                     // Update current thread ID if new thread was created
+                                    // Transfer loading state from temp ID to real thread ID
+                                    const oldThreadId = this.currentThreadId;
+                                    const wasLoading = this.loadingStates[oldThreadId];
+                                    if (wasLoading && oldThreadId.startsWith('temp-')) {
+                                        delete this.loadingStates[oldThreadId];
+                                    }
                                     this.currentThreadId = data.data.thread_id;
+                                    if (wasLoading) {
+                                        this.loadingStates[this.currentThreadId] = true;
+                                    }
                                     console.log('[DEBUG] Thread ID set to:', this.currentThreadId);
                                 } else if (data.event === 'message_tokens') {
-                                    assistantMessage.content += data.data.content;
-                                    // Update the message in place - use splice for better reactivity
-                                    const index = this.messages.findIndex(m => m.id === assistantMessage.id);
-                                    if (index !== -1) {
-                                        this.messages.splice(index, 1, { ...assistantMessage });
+                                    // Add message as a separate segment to maintain order
+                                    if (assistantMessage) {
+                                        // Initialize segments array if not present
+                                        if (!assistantMessage.segments) {
+                                            assistantMessage.segments = [];
+                                        }
+
+                                        // Find if there's an existing message segment to append to
+                                        let lastSegment = assistantMessage.segments[assistantMessage.segments.length - 1];
+                                        if (lastSegment && lastSegment.type === 'message') {
+                                            // Append to existing message segment
+                                            lastSegment.content += data.data.content;
+                                        } else {
+                                            // Create new message segment
+                                            assistantMessage.segments.push({
+                                                type: 'message',
+                                                content: data.data.content,
+                                                timestamp: data.data.timestamp,
+                                                isCollapsed: false  // Regular messages start expanded
+                                            });
+                                        }
+
+                                        // Also update the legacy content field for compatibility
+                                        assistantMessage.content = assistantMessage.segments
+                                            .filter(s => s.type === 'message')
+                                            .map(s => s.content)
+                                            .join('');
+
+                                        // Log every 50 chars to avoid spam
+                                        if (assistantMessage.content.length % 50 < data.data.content.length) {
+                                            console.log('[DEBUG] Message content length:', assistantMessage.content.length);
+                                        }
+                                        // Auto-scroll only if user is already at bottom
+                                        const wasAtBottom = this.isScrolledToBottom();
+                                        this.$nextTick(() => {
+                                            if (wasAtBottom) {
+                                                this.scrollToBottom(); // This now handles the animation frame itself
+                                            } else if (Math.random() < 0.05) {
+                                                console.log('[DEBUG] NOT auto-scrolling - user scrolled up');
+                                            }
+                                        });
                                     }
-                                    // Log every 50 chars to avoid spam
-                                    if (assistantMessage.content.length % 50 < data.data.content.length) {
-                                        console.log('[DEBUG] Message content length:', assistantMessage.content.length);
+                                } else if (data.event === 'thinking_tokens') {
+                                    // Add thinking tokens to the last thinking segment
+                                    if (assistantMessage) {
+                                        // Initialize segments array if not present
+                                        if (!assistantMessage.segments) {
+                                            assistantMessage.segments = [];
+                                        }
+
+                                        // Find if there's an existing thinking segment to append to
+                                        let lastSegment = assistantMessage.segments[assistantMessage.segments.length - 1];
+                                        if (lastSegment && lastSegment.type === 'thinking') {
+                                            // Append to existing thinking segment
+                                            lastSegment.content += data.data.content;
+                                        } else {
+                                            // Create new thinking segment (and ensure it starts collapsed)
+                                            assistantMessage.segments.push({
+                                                type: 'thinking',
+                                                content: data.data.content,
+                                                timestamp: data.data.timestamp,
+                                                isCollapsed: true
+                                            });
+                                        }
+
+                                        // Auto-scroll
+                                        const wasAtBottom = this.isScrolledToBottom();
+                                        this.$nextTick(() => {
+                                            if (wasAtBottom) {
+                                                this.scrollToBottom();
+                                            }
+                                        });
                                     }
-                                    // Auto-scroll only if user is already at bottom
+                                } else if (data.event === 'tool_update') {
+                                    const callId = data.data.call_id;
+
+                                    // Create new tool bubble if this is the first tool_update for this call_id
+                                    if (!toolBubbles[callId]) {
+                                        const bubbleId = `tool-${callId}`;
+                                        toolBubbles[callId] = bubbleId;
+                                        this.messages.push({
+                                            id: bubbleId,
+                                            role: 'tool',
+                                            content: '',
+                                            timestamp: new Date().toISOString(),
+                                            call_id: callId
+                                        });
+                                        console.log('[DEBUG] Created new tool bubble:', bubbleId, 'for call_id:', callId);
+                                    }
+
+                                    // Find the tool message for this call_id and append content
+                                    let toolMessage = this.messages.find(m => m.id === toolBubbles[callId]);
+                                    if (toolMessage) {
+                                        toolMessage.content += data.data.content + '\n';
+                                    }
+
+                                    // Handle creating new assistant bubble after tool call (only once, after tool bubble is created)
+                                    if (!toolCallOccurred) {
+                                        toolCallOccurred = true;
+
+                                        // Check if current assistant message is empty
+                                        const isEmpty = !assistantMessage.segments ||
+                                                        assistantMessage.segments.length === 0 ||
+                                                        assistantMessage.segments.every(s => !s.content);
+
+                                        if (isEmpty) {
+                                            // Remove the empty assistant message
+                                            const index = this.messages.findIndex(m => m.id === assistantMessageId);
+                                            if (index !== -1) {
+                                                this.messages.splice(index, 1);
+                                                console.log('[DEBUG] Removed empty assistant message before tool call');
+                                            }
+                                        }
+
+                                        // Create a new assistant message that will receive responses after the tool call
+                                        assistantMessageId = Date.now().toString() + '-assistant-after-tool';
+                                        plainAssistantMessage = {
+                                            id: assistantMessageId,
+                                            role: 'assistant',
+                                            content: '',
+                                            timestamp: new Date().toISOString(),
+                                            segments: []
+                                        };
+                                        this.messages.push(plainAssistantMessage);
+                                        console.log('[DEBUG] Created new assistant message after tool call');
+                                    }
+
+                                    // Auto-scroll
                                     const wasAtBottom = this.isScrolledToBottom();
                                     this.$nextTick(() => {
                                         if (wasAtBottom) {
-                                            this.scrollToBottom(); // This now handles the animation frame itself
-                                        } else if (Math.random() < 0.05) {
-                                            console.log('[DEBUG] NOT auto-scrolling - user scrolled up');
+                                            this.scrollToBottom();
                                         }
                                     });
                                 } else if (data.event === 'stream_end') {
-                                    console.log('[DEBUG] Stream ended. Final message length:', assistantMessage.content.length);
+                                    console.log('[DEBUG] Stream ended. Final message length:', assistantMessage ? assistantMessage.content.length : 'N/A');
                                     this.setLoading(false);
                                     // Refresh threads if new thread was created
                                     await this.loadThreads();
                                 } else if (data.event === 'error') {
                                     console.error('Stream error:', data.data.message);
-                                    assistantMessage.content = `Error: ${data.data.message}`;
-                                    const index = this.messages.findIndex(m => m.id === assistantMessage.id);
-                                    if (index !== -1) {
-                                        this.messages[index] = { ...assistantMessage };
-                                    }
+                                    // Create a separate error message bubble
+                                    const errorMessage = {
+                                        id: Date.now().toString() + '-error',
+                                        role: 'error',
+                                        content: `Error: ${data.data.message}`,
+                                        timestamp: new Date().toISOString()
+                                    };
+                                    this.messages.push(errorMessage);
                                     this.setLoading(false);
                                 }
                             } catch (e) {
@@ -453,7 +732,6 @@ function chatApp() {
                 this.offline = true;
             }
         },
-
         // Utility Methods
         toggleLayout() {
             this.documentScrollMode = !this.documentScrollMode;
@@ -501,9 +779,7 @@ function chatApp() {
         },
 
         setLoading(loading) {
-            if (this.currentThreadId) {
-                this.loadingStates[this.currentThreadId] = loading;
-            }
+            this.loadingStates[this.currentThreadId] = loading;
         }
     }
 }

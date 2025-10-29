@@ -76,10 +76,9 @@
 
                     <label>System Prompt</label>
                     <select x-model="currentSystemPrompt">
-                        <option value="default">Default</option>
-                        <option value="code-assistant">Code Assistant</option>
-                        <option value="creative-writing">Creative Writing</option>
-                        <option value="analysis">Analysis</option>
+                        <template x-for="(description, key) in systemPrompts" :key="key">
+                            <option :value="key" x-text="description || key"></option>
+                        </template>
                     </select>
                 </div>
 
@@ -144,19 +143,57 @@
                             </template>
                         </select>
                         <select id="system-prompt-selector" class="system-prompt-selector" x-model="currentSystemPrompt">
-                            <option value="default">Default</option>
-                            <option value="code-assistant">Code Assistant</option>
-                            <option value="creative-writing">Creative Writing</option>
-                            <option value="analysis">Analysis</option>
+                            <template x-for="(description, key) in systemPrompts" :key="key">
+                                <option :value="key" x-text="description || key"></option>
+                            </template>
                         </select>
                     </div>
                 </div>
 
                 <div class="chat-messages" x-ref="messagesContainer">
                     <template x-for="message in messages" :key="message.id">
-                        <div class="message" :class="message.role">
-                            <div class="message-bubble" x-html="renderMarkdown(message.content)"></div>
-                            <div class="message-time" x-text="formatTime(message.timestamp)"></div>
+                      <div class="message" :class="message.role">
+
+                          <template x-if="message.role === 'assistant'">
+                              <div> <div class="message-bubble">
+
+                                      <template x-for="segment in message.segments || []" :key="segment.timestamp">
+                                          <div>
+                                              <div x-show="segment.type === 'thinking'" class="thinking-section">
+                                                  <div class="thinking-header" @click="segment.isCollapsed = !segment.isCollapsed">
+                                                      <span class="thinking-twisty" :class="{ 'expanded': !segment.isCollapsed }">▶</span>
+                                                      <span class="thinking-label">Thinking...</span>
+                                                  </div>
+                                                  <div class="thinking-content" x-show="!segment.isCollapsed" x-transition>
+                                                      <div x-html="renderMarkdown(segment.content)"></div>
+                                                  </div>
+                                              </div>
+
+                                              <div x-show="segment.type === 'message'" x-html="renderMarkdown(segment.content)"></div>
+                                          </div>
+                                      </template>
+
+                                      <template x-if="!message.segments || message.segments.length === 0">
+                                          <div x-html="renderMarkdown(message.content)"></div>
+                                      </template>
+
+                                  </div>
+
+                                  <div class="message-time" x-text="formatTime(message.timestamp)"></div>
+                              </div>
+                          </template>
+
+
+
+
+
+                            <!-- Non-assistacnt messages (user, tool, etc.) -->
+                            <template x-if="message.role !== 'assistant'">
+                                <div>
+                                    <div class="message-bubble" x-html="renderMarkdown(message.content)"></div>
+                                    <div class="message-time" x-text="formatTime(message.timestamp)"></div>
+                                </div>
+                            </template>
                         </div>
                     </template>
                 </div>

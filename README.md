@@ -6,13 +6,16 @@ A minimal, backend-heavy AI chat interface built to be fully modular. Designed t
 
 Current status:
 
-- Single OpenAI endpoint only (recommended way: use LiteLLM Proxy to access any number of endpoints)
-- Model selection and chat runs in first tests; threads persisit and full-test search for threads is available
-- System prompts and temperature temporarily hardcoded
-- API still not stable
-- Front-end is fully AI-generated, not human-reviewed, and therefore suboptimal. (The back-end IS human-reviewed)
-- No tools nor functions yet, though some stubs exist
+- Not tested NEARLY enough! Needs a lot of use-testing, please feel free to raise issues on GitHub and/or email mr (at) ramendik.eu and/or ping on Discord misha_r or Telegram @ramendik
+- Single OpenAI endpoint only. Recommended usage: set up your own [https://docs.litellm.ai/docs/simple_proxy](LiteLLM Proxy) to access any number of endpoints, and/or use a routing and/or subscription service such as OpenRouter or [https://nano-gpt.com/invite/K4xLN4W9](NanoGPT) (note this is an invite link, I find their subscription to be good value but they are still ironing out glitches).
+- Model selection and chat runs; threads persist and full-test search for threads is available
+- System prompts configured via YAML file
 - User management with a YAML file that includes usernames, bcrypt-hashed passwords, roles (which don't do anything yet), and an optional model mask to allow a user to use only a subset of models
+- Tools work. You can use "function" tools where you simply provide a function with type hints and a docstring and it ghets converted to a tool schema (thanks, llmio team). Just drop your tools as *.py files into plugins/tools/ and restart the server. OpenWebUI compatible tools are likely to work if they don't use any OpenWebUI internals.
+- Temperature temporarily hardcoded
+- API still not stable
+- Front-end is fully AI-generated, not human-reviewed, and therefore suboptimal and hard to modify. No CORS as I am not sure of security implications. (The back-end IS human-reviewed)
+- No functions yet and no file uploads yet - these are the two items on the todo list before a wider announdement
 - The sole available data store is SQLite, which has a key scaling limitation: only a single writing transaction can be active at any one time. Skeleton's SQLite data store mitigates this limitation by serializing all writes in a single worker process and also implementing automatic retry logic with exponential backoff to handle concurrent write operations safely across multiple worker processes.
 - For any database changes, the SQLite data store can handle adding new fields but cannot handle destructive changes (such as changing a field's type or renaming a field). If such a change is required between versions, you may need to delete your skeleton.db file to start fresh. However we will aim to avoid such changes; if they happen, a very loud warning will be provided and the system will cleanly fail to start.
 - There is a test suite from an earlier stage of development, now out of date and significantly incomplete
@@ -34,7 +37,7 @@ Current status:
 - **Thread Management**: Persistent chat threads with search functionality
 - **File Upload**: Support for file attachments (NOT YET)
 - **Authentication**: User authentication, in the future with role-based access. Currently implemented with a YAML configuration file that allows limiting user access to specific models
-- **Tool Support**: Ready for OpenAI function calling through llmio (NOT YET)
+- **Tool Support**: Ready for OpenAI function calling; uses llmio to create schemas from Python functions.
 - **Function support**: Functions can hook into the process at several points to modify the requests, responses, and model context (NOT YET)
 
 ## Quick Start
@@ -153,7 +156,9 @@ For quick testing without persistent data:
 docker run -p 8000:8000 -e SKELETON_MODE=ephemeral skeleton
 ```
 
-This creates a default user `default` with password `default`. **DO NOT use for production!**
+This creates a default user `default` with password `default`. No other users are available. **DO NOT use for production!**
+
+In ephemeral mode users are logged out on restart.
 
 ### Production Deployment with Persistent Data
 

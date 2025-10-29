@@ -71,7 +71,7 @@ case "${1:-all}" in
         ;;
     "watch")
         echo "Running tests in watch mode..."
-        if ! command -v pytest-watch &> /dev/null; then
+        if ! command -v pytest-watch >/dev/null 2>&1; then
             echo "❌ pytest-watch not installed. Install with: pip install pytest-watch"
             exit 1
         fi

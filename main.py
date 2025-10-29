@@ -77,33 +77,89 @@ security = HTTPBearer()
 
 
 # Rate limiting
-# buckets handled inside a class, used as a singleton
-class _RateLimiter:
-    """encapsulates rate limiting calculation"""
+class RateLimiter:
+    """Manages rate limiting with per-endpoint policies
+
+    WARNING: This is an in-memory implementation. In multi-worker deployments
+    (e.g., multiple uvicorn/gunicorn workers), each worker maintains its own
+    rate limit state independently. Rate limits become per-worker rather than
+    global (e.g., 5 login attempts per worker instead of 5 total).
+
+    For single-process deployments, this provides effective rate limiting.
+    For multi-worker deployments, rate limits are approximate but still provide
+    significant protection against brute-force attacks.
+
+    TODO: Consider implementing SQLite-based or Redis-based rate limiting for
+    true global limits across multiple workers.
+    """
     __slots__ = ("_buckets",)
+
     def __init__(self) -> None:
         self._buckets: Dict[str, list[float]] = defaultdict(list)
 
-    def is_rate_limited(self, ip: str, max_attempts: int = 5, window: int = 60) -> bool:
-        now = time.time()
-        # drop older than window
-        self._buckets[ip] = [t for t in self._buckets[ip] if now - t < window]
-        if len(self._buckets[ip]) >= max_attempts:
-            return True
-        self._buckets[ip].append(now)
-        return False
-RATE_LIMITER = _RateLimiter()   # singleton instance
+    def is_rate_limited(self, key: str, max_attempts: int = 5, window: int = 60) -> bool:
+        """
+        Check if a key has exceeded rate limit.
 
-# determine the IP address of the client
+        Args:
+            key: Unique identifier (e.g., "login:192.168.1.1" or "message:user123")
+            max_attempts: Maximum attempts allowed in the window
+            window: Time window in seconds
+
+        Returns:
+            True if rate limited, False otherwise
+        """
+        now = time.time()
+        # Remove entries older than the window
+        self._buckets[key] = [t for t in self._buckets[key] if now - t < window]
+
+        if len(self._buckets[key]) >= max_attempts:
+            return True
+
+        self._buckets[key].append(now)
+        return False
+
+RATE_LIMITER = RateLimiter()
+
+# Helper to get client IP
 def client_ip(request: Request) -> str:
-    # honour X-Forwarded-For if behind proxy, else raw IP
+    """Extract client IP, respecting X-Forwarded-For header for proxied requests"""
     fwd = request.headers.get("X-Forwarded-For")
     return fwd.split(",")[0].strip() if fwd else request.client.host
 
-# Dependency for rate limiting
-async def rate_limit_ip(ip: str = Depends(client_ip)):
-    if RATE_LIMITER.is_rate_limited(ip):
-        raise HTTPException(status_code=429, detail="Too many attempts, wait 60 s")
+# Authentication dependency
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    user = plugin_manager.get_plugin("auth").verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+    return user
+
+# Rate limit dependencies for different endpoints
+async def rate_limit_login(ip: str = Depends(client_ip)):
+    """Rate limit login attempts: 5 per 60 seconds per IP"""
+    if RATE_LIMITER.is_rate_limited(f"login:{ip}", max_attempts=5, window=60):
+        raise HTTPException(status_code=429, detail="Too many login attempts. Please wait 60 seconds.")
+
+async def rate_limit_message(current_user: str = Depends(get_current_user)):
+    """Rate limit message sending: 10 per 10 seconds per user"""
+    if RATE_LIMITER.is_rate_limited(f"message:{current_user}", max_attempts=10, window=10):
+        raise HTTPException(status_code=429, detail="Too many messages. Please wait 10 seconds.")
+
+async def rate_limit_threads(current_user: str = Depends(get_current_user)):
+    """Rate limit thread operations: 20 per 60 seconds per user"""
+    if RATE_LIMITER.is_rate_limited(f"threads:{current_user}", max_attempts=20, window=60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait 60 seconds.")
+
+async def rate_limit_search(current_user: str = Depends(get_current_user)):
+    """Rate limit search: 60 per 10 seconds per user"""
+    if RATE_LIMITER.is_rate_limited(f"search:{current_user}", max_attempts=60, window=10):
+        raise HTTPException(status_code=429, detail="Too many search requests. Please wait 10 seconds.")
+
+async def rate_limit_models(current_user: str = Depends(get_current_user)):
+    """Rate limit model listing: 60 per 60 seconds per user"""
+    if RATE_LIMITER.is_rate_limited(f"models:{current_user}", max_attempts=60, window=60):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait 60 seconds.")
 
 
 # Pydantic models with validation
@@ -137,14 +193,6 @@ class ThreadUpdateRequest(BaseModel):
     def strip_title(cls, v):
         return v.strip() if v else v
 
-# Authentication dependency
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
-    user = plugin_manager.get_plugin("auth").verify_token(token)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
-    return user
-
 # Mount static files - serve frontend from /static path
 # Use the correct path relative to the root directory
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
@@ -169,7 +217,7 @@ async def health():
         raise HTTPException(status_code=500, detail="Skeleton database not working")
 
 @app.post("/login")
-async def login(request: LoginRequest, _: None = Depends(rate_limit_ip)):
+async def login(request: LoginRequest, _: None = Depends(rate_limit_login)):
     logger.info(f"Login attempt for user: {request.username}")
     user = plugin_manager.get_plugin("auth").authenticate_user(request.username, request.password)
     if not user:
@@ -186,22 +234,36 @@ async def logout(current_user: str = Depends(get_current_user)):
     return {"message": "Logged out successfully"}
 
 @app.get("/api/v1/models")
-async def get_models(current_user: str = Depends(get_current_user)):
+async def get_models(current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_models)):
     logger.debug(f"User {current_user} requested models list")
-    return await plugin_manager.get_plugin("model").get_available_models()
+    models = await plugin_manager.get_plugin("model").get_available_models()
+
+    # Apply model mask filtering for the current user
+    auth_plugin = plugin_manager.get_plugin("auth")
+    filtered_models = []
+    for model in models:
+        if auth_plugin.request_allowed(current_user, model):
+            filtered_models.append(model)
+
+    # If no models are allowed, return MODELS NOT AVAILABLE
+    if not filtered_models:
+        logger.warning(f"User {current_user} has no models allowed by model mask")
+        return ["MODELS NOT AVAILABLE"]
+
+    return filtered_models
 
 @app.get("/api/v1/system_prompts")
 async def get_system_prompts(current_user: str = Depends(get_current_user)):
     logger.debug(f"User {current_user} requested system prompts")
-    return ["default", "code-assistant", "creative-writing", "analysis"]
+    return await plugin_manager.get_plugin("system_prompt").list_prompts()
 
 @app.get("/api/v1/threads")
-async def get_threads(current_user: str = Depends(get_current_user)):
+async def get_threads(current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_threads)):
     logger.debug(f"User {current_user} requested threads list")
     return await plugin_manager.get_plugin("thread").get_threads(current_user)
 
 @app.get("/api/v1/threads/{thread_id}/messages")
-async def get_thread_messages(thread_id: str, current_user: str = Depends(get_current_user)):
+async def get_thread_messages(thread_id: str, current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_threads)):
     logger.debug(f"User {current_user} requested messages for thread {thread_id}")
     messages = await plugin_manager.get_plugin("thread").get_thread_messages(thread_id, current_user)
     if messages is None:
@@ -210,7 +272,7 @@ async def get_thread_messages(thread_id: str, current_user: str = Depends(get_cu
     return messages
 
 @app.post("/api/v1/threads/{thread_id}")
-async def update_thread(thread_id: str, request: ThreadUpdateRequest, current_user: str = Depends(get_current_user)):
+async def update_thread(thread_id: str, request: ThreadUpdateRequest, current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_threads)):
     logger.info(f"User {current_user} updating thread {thread_id}")
     success = await plugin_manager.get_plugin("thread").update_thread(thread_id, current_user, request.title)
     if not success:
@@ -219,7 +281,7 @@ async def update_thread(thread_id: str, request: ThreadUpdateRequest, current_us
     return {"message": "Thread updated successfully"}
 
 @app.delete("/api/v1/threads/{thread_id}")
-async def archive_thread(thread_id: str, current_user: str = Depends(get_current_user)):
+async def archive_thread(thread_id: str, current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_threads)):
     logger.info(f"User {current_user} archiving thread {thread_id}")
     success = await plugin_manager.get_plugin("thread").archive_thread(thread_id, current_user)
     if not success:
@@ -228,7 +290,7 @@ async def archive_thread(thread_id: str, current_user: str = Depends(get_current
     return {"message": "Thread archived successfully"}
 
 @app.get("/api/v1/search")
-async def search_threads(q: str, current_user: str = Depends(get_current_user)):
+async def search_threads(q: str, current_user: str = Depends(get_current_user), _: None = Depends(rate_limit_search)):
     logger.debug(f"User {current_user} searching for: {q}")
     if len(q) > 500:  # Input validation
         raise HTTPException(status_code=400, detail="Search query too long")
@@ -244,7 +306,8 @@ async def send_message(
     thread_id: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
     system_prompt: Optional[str] = Form(None),
-    current_user: str = Depends(get_current_user)
+    current_user: str = Depends(get_current_user),
+    _: None = Depends(rate_limit_message)
 ):
     """Send a message and return SSE stream"""
     # Input validation
@@ -256,115 +319,20 @@ async def send_message(
     logger.info(f"User {current_user} sending message to thread {thread_id or 'new'}")
 
     async def event_generator():
-        accumulated_response = []  # Collect all response tokens
-        thread_id_val = None
-        thread_model = None  # Store the thread's model for fallback
-
         try:
-            # Create or get thread
-            if thread_id:
-                thread_id_val = thread_id
-                # Verify user has access to this thread
-                existing_messages = await plugin_manager.get_plugin("thread").get_thread_messages(thread_id_val, current_user)
-                if existing_messages is None:
-                    error_event = {
-                        "event": "error",
-                        "data": {"message": "Thread not found or access denied"}
-                    }
-                    yield f"data: {json.dumps(error_event)}\n\n"
-                    return
-
-                # Get thread info to extract the model
-                threads = await plugin_manager.get_plugin("thread").get_threads(current_user)
-                thread_info = next((t for t in threads if t["id"] == thread_id_val), None)
-                if thread_info:
-                    thread_model = thread_info.get("model")
-                    logger.debug(f"Using thread model: {thread_model}")
-            else:
-                # Create new thread
-                thread_id_val = await plugin_manager.get_plugin("thread").create_thread(
-                    title=content[:50] + "..." if len(content) > 50 else content,
-                    model=model or "gpt-3.5-turbo",
-                    system_prompt=system_prompt or "default",
-                    user=current_user
-                )
-                logger.info(f"Created new thread {thread_id_val} for user {current_user}")
-
-            # Add user message to thread
-            success = await plugin_manager.get_plugin("thread").add_message(
-                thread_id_val, current_user, "user", "message_text", content
-            )
-            if not success:
-                logger.error(f"Failed to add user message to thread {thread_id_val}")
-                error_event = {
-                    "event": "error",
-                    "data": {"message": "Failed to add message to thread"}
-                }
-                yield f"data: {json.dumps(error_event)}\n\n"
-                return
-
-            # Send thread_id to client so it knows which thread this is
-            yield f"data: {json.dumps({'event': 'thread_id', 'data': {'thread_id': thread_id_val}})}\n\n"
-
-            # Get message history
-            history = await plugin_manager.get_plugin("thread").get_thread_messages(thread_id_val, current_user)
-
-            # Build context for function plugins
-            context = {
-                "user_message": content,
-                "thread_id": thread_id_val,
-                "model": model or thread_model or "gpt-3.5-turbo",  # Use thread model as fallback
-                "system_prompt": system_prompt or "default",
-                "user": current_user,
-                "history": history
-            }
-
-            # Execute function plugins
-            context = await plugin_manager.function.execute_functions(context)
-
-            # Get tool schemas for model (for future tool support)
-            tool_schemas = plugin_manager.tool.get_tool_schemas()
-
-            # Stream response from model
-            model_name = model or thread_model or "gpt-3.5-turbo"  # Use thread model as fallback
-            async for chunk in plugin_manager.get_plugin("model").generate_response(
-                messages=history,
-                model=model_name,
-                system_prompt=system_prompt or "default"
+            # Get the message processor plugin
+            processor = plugin_manager.get_plugin("message_processor")
+            
+            # Delegate all message processing to the plugin
+            async for event in processor.process_message(
+                user_id=current_user,
+                content=content,
+                thread_id=thread_id,
+                model=model,
+                system_prompt=system_prompt
             ):
-                # Handle tool calls if present (future support)
-                if chunk.get("event") == "tool_call":
-                    try:
-                        tool_result = await plugin_manager.tool.execute_tool(
-                            chunk["data"]["tool_name"],
-                            chunk["data"]["tool_arguments"]
-                        )
-                        yield f"data: {json.dumps({'event': 'tool_result', 'data': tool_result})}\n\n"
-                    except Exception as e:
-                        logger.error(f"Tool execution error: {e}")
-                        yield f"data: {json.dumps({'event': 'tool_error', 'data': {'message': str(e)}})}\n\n"
-                else:
-                    # Accumulate message tokens for storage
-                    if chunk.get("event") == "message_tokens":
-                        token_content = chunk.get("data", {}).get("content", "")
-                        accumulated_response.append(token_content)
-
-                    # Stream to client
-                    yield f"data: {json.dumps(chunk)}\n\n"
-
-            # Store the complete assistant response
-            complete_response = "".join(accumulated_response)
-            if complete_response:
-                success = await plugin_manager.get_plugin("thread").add_message(
-                    thread_id_val, current_user, "assistant", "message_text",
-                    complete_response, model=model_name
-                )
-                if not success:
-                    logger.error(f"Failed to store assistant response for thread {thread_id_val}")
-            else:
-                logger.warning(f"Empty response generated for thread {thread_id_val}")
-
-            logger.info(f"Completed message generation for thread {thread_id_val}, response length: {len(complete_response)}")
+                # Stream events from plugin to client
+                yield f"data: {json.dumps(event)}\n\n"
 
         except Exception as e:
             logger.error(f"Error in message generation: {e}", exc_info=True)

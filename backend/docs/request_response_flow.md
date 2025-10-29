@@ -20,7 +20,7 @@ This document explains how a user message flows through the Skeleton system, fro
 **Purpose**: AI model interaction and response generation  
 **Key Methods**:
 - `get_available_models()` - List available models
-- `generate_response(messages, model, system_prompt)` - Stream model responses
+- `generate_response(messages, model, system_prompt, tools)` - Stream model responses with tool support
 
 **Default Implementation**: `DefaultModelClient` - OpenAI SDK integration with LiteLLM proxy support
 
@@ -48,6 +48,54 @@ This document explains how a user message flows through the Skeleton system, fro
 
 **Default Implementation**: `SQLiteStorePlugin` - SQLite backend with FTS5 search and json_collection support
 
+### 5. Context Plugin (`context`)
+**Role**: `context`  
+**Purpose**: Mutable conversation context management for model interactions  
+**Key Methods**:
+- `get_context(thread_id, user_id, strip_extra)` - Retrieve cached conversation context
+- `add_message(thread_id, user_id, message, message_id)` - Add message to context
+- `update_message(thread_id, user_id, message_id, updates)` - Update specific message
+- `remove_messages(thread_id, user_id, message_ids)` - Remove messages by ID
+- `regenerate_context(thread_id, user_id)` - Regenerate context from history
+- `invalidate_context(thread_id, user_id)` - Clear cached context
+
+**Default Implementation**: `DefaultContextManager` - SQLite-based context caching with message ID tracking
+
+### 6. System Prompt Plugin (`system_prompt`)
+**Role**: `system_prompt`  
+**Purpose**: System prompt management and resolution  
+**Key Methods**:
+- `get_prompt(key)` - Get system prompt content by key
+- `list_prompts()` - List available prompt keys and descriptions
+- `get_all_prompts()` - Get all prompts with full metadata
+
+**Default Implementation**: `YamlSystemPromptManager` - YAML-based prompt storage with validation
+
+### 7. Message Processor Plugin (`message_processor`)
+**Role**: `message_processor`  
+**Purpose**: Orchestrates the complete message processing flow  
+**Key Methods**:
+- `process_message(user_id, content, thread_id, model, system_prompt)` - Process message and stream response
+
+**Default Implementation**: `DefaultMessageProcessor` - Complete flow orchestration with tool support
+
+### 8. Tool Plugin Manager (`tool`)
+**Role**: `tool` (managed by `ToolPluginManager`)  
+**Purpose**: Tool discovery, schema collection, and execution  
+**Key Methods**:
+- `execute_tool(tool_name, arguments)` - Execute specific tool
+- `get_tool_schemas()` - Get all tool schemas for OpenAI function calling
+
+**Implementation**: `ToolPluginManager` - Manages both class-based and function-based tools
+
+### 9. Function Plugin Manager (`function`)
+**Role**: `function` (managed by `FunctionPluginManager`)  
+**Purpose**: Request context modification and preprocessing  
+**Key Methods**:
+- `execute_functions(context)` - Execute all function plugins in priority order
+
+**Implementation**: `FunctionPluginManager` - Executes plugins that modify request context
+
 ## Request/Response Flow: User Message
 
 ### 1. HTTP Request Arrival
@@ -63,98 +111,30 @@ async def send_message(content: str = Form(...), thread_id: Optional[str] = Form
 
 **Authentication Check**: `get_current_user()` dependency validates JWT token via `AuthPlugin.verify_token()`
 
-### 2. Request Validation & Context Building
+### 2. Message Processor Delegation
 **File**: `main.py` lines 410-450
 
 ```python
-# Input validation
-if not content or len(content.strip()) == 0:
-    raise HTTPException(status_code=400, detail="Message content cannot be empty")
-
-# Build context for function plugins
-context = {
-    "user_message": content,
-    "thread_id": thread_id,
-    "model": model or thread_model or "gpt-3.5-turbo",
-    "system_prompt": system_prompt or "default", 
-    "user": current_user,
-    "history": history
-}
+async def event_generator():
+    try:
+        # Get the message processor plugin
+        processor = plugin_manager.get_plugin("message_processor")
+        
+        # Delegate all message processing to the plugin
+        async for event in processor.process_message(
+            user_id=current_user,
+            content=content,
+            thread_id=thread_id,
+            model=model,
+            system_prompt=system_prompt
+        ):
+            # Stream events from plugin to client
+            yield f"data: {json.dumps(event)}\n\n"
 ```
 
-### 3. Function Plugin Execution
-**File**: `main.py` lines 460-470  
-**Plugin Manager**: `plugin_manager.function.execute_functions()`
+**All subsequent processing is handled by the `MessageProcessorPlugin`**
 
-```python
-# Execute function plugins in priority order (highest first)
-context = await plugin_manager.function.execute_functions(context)
-```
-
-**Function plugins can**:
-- Add user context/preferences
-- Log requests
-- Filter content
-- Modify messages
-- Add metadata
-- Implement rate limiting
-
-**Execution Order**: Priority 100 → 90 → 80 → ... → 0
-
-### 4. Thread Management
-**File**: `main.py` lines 480-520  
-**Plugin**: `ThreadManagerPlugin`
-
-```python
-# Create new thread or verify existing thread access
-if thread_id:
-    # Verify user has access to this thread
-    existing_messages = await plugin_manager.get_plugin("thread").get_thread_messages(thread_id, current_user)
-    if existing_messages is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
-else:
-    # Create new thread
-    thread_id = await plugin_manager.get_plugin("thread").create_thread(
-        title=content[:50] + "..." if len(content) > 50 else content,
-        model=model or "gpt-3.5-turbo",
-        system_prompt=system_prompt or "default", 
-        user=current_user
-    )
-```
-
-### 5. Message Storage
-**File**: `main.py` lines 530-540  
-**Plugin**: `ThreadManagerPlugin`
-
-```python
-# Add user message to thread (append-only collection)
-success = await plugin_manager.get_plugin("thread").add_message(
-    thread_id, current_user, "user", "message_text", content
-)
-```
-
-**Behind the scenes**: Uses `StorePlugin.collection_append()` for O(1) append operation
-
-### 6. Model Response Generation
-**File**: `main.py` lines 550-600  
-**Plugin**: `ModelPlugin`
-
-```python
-# Stream response from model
-async for chunk in plugin_manager.get_plugin("model").generate_response(
-    messages=history,
-    model=model or thread_model or "gpt-3.5-turbo",
-    system_prompt=system_prompt or "default"
-):
-    # Handle different chunk types
-    if chunk.get("event") == "message_tokens":
-        yield f"data: {json.dumps(chunk)}\n\n"
-    elif chunk.get("event") == "tool_call":
-        # Handle tool execution (future feature)
-        tool_result = await plugin_manager.tool.execute_tool(...)
-```
-
-### 7. Response Storage
+### 7. Response Storage with Thinking and Tools
 **File**: `main.py` lines 610-630  
 **Plugin**: `ThreadManagerPlugin`
 
@@ -166,10 +146,43 @@ if complete_response:
         thread_id, current_user, "assistant", "message_text", 
         complete_response, model=model
     )
+
+# Store thinking content if present
+if thinking_content:
+    await plugin_manager.get_plugin("thread").add_message(
+        thread_id, current_user, "thinking", "message_text", 
+        thinking_content, model=model
+    )
+
+# Store tool results if present
+for tool_result in tool_results:
+    await plugin_manager.get_plugin("thread").add_message(
+        thread_id, current_user, "tool", "message_text", 
+        tool_result["content"], model=model
+    )
 ```
 
-### 8. SSE Stream Termination
-**File**: `main.py` lines 640-650
+### 8. Tool Execution Loop (if tools are called)
+**File**: `main.py` lines 650-700
+
+```python
+# Execute tools and add results to context
+for tool_call in tool_calls:
+    result = await plugin_manager.tool.execute_tool(
+        tool_call["function"]["name"], 
+        tool_call["function"]["arguments"]
+    )
+    
+    # Add tool result to context for next model round
+    await context_plugin.add_message(thread_id, user_id, {
+        "role": "tool",
+        "tool_call_id": tool_call["id"],
+        "content": result
+    })
+```
+
+### 9. SSE Stream Termination
+**File**: `main.py` lines 700-710
 
 ```python
 # Send end of stream
@@ -182,15 +195,33 @@ yield f"data: {json.dumps({'event': 'stream_end', 'data': {'model': model}})}\n\
 HTTP Request
     ↓
 Auth Plugin (verify token, check permissions)
-    ↓  
-Function Plugins (modify context, add metadata)
     ↓
-Thread Manager Plugin (create/verify thread, store user message)
+Message Processor Plugin (orchestrates entire flow)
     ↓
-Model Plugin (generate streaming response)
+┌─ Thread Manager Plugin (create/verify thread, store user message)
+│  └─ Store Plugin (underlying storage operations)
+↓
+Context Plugin (get/regenerate conversation context)
     ↓
-Thread Manager Plugin (store assistant response)
+System Prompt Plugin (resolve system prompt key to content)
     ↓
+Model Plugin (generate streaming response with thinking/tools)
+    ↓
+[Tool Loop - if tools called]
+    ↓
+├─ Tool Plugin Manager (execute tools, return results)
+│  ├─ Class-based Tools (manual schema, custom execution)
+│  └─ Function-based Tools (auto-schema, Pydantic validation)
+↓
+Context Plugin (add tool results to context)
+    ↓
+Model Plugin (continue response with tool results)
+    ↓
+[/Tool Loop]
+    ↓
+┌─ Thread Manager Plugin (store thinking, response, and tool results)
+│  └─ Store Plugin (underlying storage operations)
+↓
 SSE Stream to Client
 ```
 
@@ -221,10 +252,62 @@ SSE Stream to Client
 
 ## Extension Points
 
-- **Function Plugins**: Add logging, rate limiting, content filtering
+- **Function Plugins**: Add logging, rate limiting, content filtering, request preprocessing
 - **Tool Plugins**: Add external API integrations (weather, files, etc.)
+  - Class-based Tools: Full control over schema and execution
+  - Function-based Tools: Auto-generated schemas with type hints
 - **Model Plugins**: Support different AI providers (Anthropic, local models)
 - **Store Plugins**: Use different databases (PostgreSQL, Redis, etc.)
 - **Auth Plugins**: Implement OAuth, LDAP, multi-factor auth
+- **System Prompt Plugins**: Use different prompt storage systems
+- **Message Processor Plugins**: Completely customize message processing flow
+- **Context Plugins**: Use different context caching strategies
+
+## Tool Support Architecture
+
+### Tool Types
+
+1. **Class-based Tools**: Classes implementing `ToolPlugin` protocol
+   - Manual schema definition via `get_schema()` method
+   - Full control over execution logic
+   - Suitable for complex tools with custom validation
+   - Example: `WeatherToolPlugin` with custom API integration
+
+2. **Function-based Tools**: Plain Python functions with type hints
+   - Auto-generated schema using `llmio.function_parser`
+   - Automatic argument validation with Pydantic
+   - Simpler implementation for basic tools
+   - Example: `calculate_expression(expression: str) -> Dict[str, Any]`
+
+### Tool Loading Process
+
+1. **File Discovery**: Scan `plugins/tools/` directory for `.py` files
+2. **Class Detection**: Classes with `get_schema()` and `execute()` methods
+3. **Function Detection**: Functions with type hints (if no class-based tools found)
+4. **Deduplication**: Tool names must be unique; duplicates skipped with warnings
+5. **Schema Collection**: Collect OpenAI function schemas from all loaded tools
+
+### Tool Execution Flow
+
+1. **Schema Registration**: Tool manager collects schemas from all loaded tools
+2. **Model Integration**: Schemas passed to model plugin during response generation
+3. **Tool Call Detection**: Model returns tool calls in streaming response
+4. **Tool Execution**: Tool manager executes called tools with validated arguments
+5. **Result Integration**: Tool results added to context for continued conversation
+6. **Loop Continuation**: Model generates follow-up response with tool results
+7. **Multi-round Support**: Tool calls can continue across multiple response rounds
+
+### Tool Message Types
+
+- `tool_calls`: Model requests tool execution (streamed from model)
+- `tool_update`: Backend streams tool execution status to user
+- `tool`: Tool results stored in conversation history (OpenAI format)
+
+### Tool Error Handling
+
+- **Binary Data Detection**: Automatically detected and converted to error messages
+- **JSON Serialization**: Handled automatically with fallback for non-serializable data
+- **Execution Errors**: Streamed to user and stored in history
+- **Validation**: Function-based tools use Pydantic validation, class-based tools use custom validation
 
 This architecture ensures that the core remains minimal while allowing unlimited extensibility through the plugin system.

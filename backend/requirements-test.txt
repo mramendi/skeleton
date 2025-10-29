@@ -5,4 +5,4 @@ pytest-cov>=4.1.0
 httpx>=0.24.0  # For TestClient with async support
 
 # Include all main dependencies
--r requirements.txt
+-r ../requirements.txt

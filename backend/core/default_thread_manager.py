@@ -58,7 +58,7 @@ class DefaultThreadManager():
         await store.create_store_if_not_exists("ChatHistoryThreads", self._store_schema)
 
         # Create the thread
-        await store.add(user, "ChatHistoryThreads", thread_data, thread_id)
+        await store.add(user_id=user, store_name="ChatHistoryThreads", data=thread_data, record_id=thread_id)
 
         logger.debug(f"Created thread {thread_id} for user {user}")
         return thread_id
@@ -73,7 +73,7 @@ class DefaultThreadManager():
         filters = {"user": user, "is_archived": False}
 
         # Get threads
-        threads = await store.find(user, "ChatHistoryThreads", filters=filters, order_by="created_at", order_desc=True)
+        threads = await store.find(user_id=user, store_name="ChatHistoryThreads", filters=filters, order_by="created_at", order_desc=True)
 
         # Filter by query if provided (simple text search in title)
         if query:
@@ -100,30 +100,35 @@ class DefaultThreadManager():
         await store.create_store_if_not_exists("ChatHistoryThreads", self._store_schema)
 
         # Get thread to verify user access
-        thread = await store.get(user, "ChatHistoryThreads", thread_id)
+        thread = await store.get(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id)
         if not thread or thread.get("user") != user:
             return None
 
         # Get messages from collection
-        messages = await store.collection_get(user, "ChatHistoryThreads", thread_id, "messages")
+        messages = await store.collection_get(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id, field_name="messages")
 
         # Format messages (add model field for assistant messages if present)
+        # Convert aux_id to call_id for API consistency
         formatted_messages = []
         for msg in messages:
             formatted_msg = {
                 "role": msg.get("role"),
-                "type": msg.get("type", "message_text"),  # Default to message_text
                 "content": msg.get("content"),
                 "timestamp": msg.get("timestamp")
             }
+            if msg.get("type"):
+                formatted_msg["type"] = msg.get("type")
             if msg.get("model") and msg.get("role") == "assistant":
                 formatted_msg["model"] = msg.get("model")
+            # Convert aux_id to call_id for API (frontend only knows about call_id)
+            if msg.get("aux_id"):
+                formatted_msg["call_id"] = msg.get("aux_id")
             formatted_messages.append(formatted_msg)
 
         return formatted_messages
 
-    async def add_message(self, thread_id: str, user: str, role: str, type: str, content: str, model: Optional[str] = None) -> bool:
-        """Add a message to a thread if user has access"""
+    async def add_message(self, thread_id: str, user: str, role: str, type: str, content: str, model: Optional[str] = None, aux_id: Optional[str] = None) -> bool:
+        """Add a message to a thread if user has access. aux_id can be tool call_id, file ID, etc."""
         # Get store lazily and ensure it exists
         store = self._get_store()
         await store.create_store_if_not_exists("ChatHistoryThreads", self._store_schema)
@@ -136,7 +141,7 @@ class DefaultThreadManager():
         # Create message data
         message_data = {
             "role": role,
-            "type": type,
+            "type": type,  # Include type in message data
             "content": content,
             "timestamp": datetime.now().isoformat()
         }
@@ -144,8 +149,11 @@ class DefaultThreadManager():
         if model and role == "assistant":
             message_data["model"] = model
 
+        if aux_id:
+            message_data["aux_id"] = aux_id
+
         # Append to collection (O(1) operation)
-        await store.collection_append(user, "ChatHistoryThreads", thread_id, "messages", message_data)
+        await store.collection_append(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id, field_name="messages", item=message_data)
 
         logger.debug(f"Added {role} message to thread {thread_id}")
         return True
@@ -170,7 +178,7 @@ class DefaultThreadManager():
             return True
 
         # Update thread
-        success = await store.update(user, "ChatHistoryThreads", thread_id, updates)
+        success = await store.update(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id, updates=updates)
         return success
 
     async def archive_thread(self, thread_id: str, user: str) -> bool:
@@ -185,7 +193,7 @@ class DefaultThreadManager():
             return False
 
         # Update to mark as archived
-        success = await store.update(user, "ChatHistoryThreads", thread_id, {"is_archived": True})
+        success = await store.update(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id, updates={"is_archived": True})
         return success
 
     async def search_threads(self, query: str, user: str) -> List[Dict[str, Any]]:
@@ -197,9 +205,9 @@ class DefaultThreadManager():
         # Use store's FTS search to find matching threads
         # Search across all indexable fields (title and messages)
         matching_threads = await store.full_text_search(
-            user,
-            "ChatHistoryThreads",
-            query
+            user_id=user,
+            store_name="ChatHistoryThreads",
+            query=query
         )
 
         if not matching_threads:
@@ -224,7 +232,7 @@ class DefaultThreadManager():
                 })
             else:
                 # Match must be in messages - fetch messages to find snippet
-                messages = await store.collection_get(user, "ChatHistoryThreads", thread_id, "messages")
+                messages = await store.collection_get(user_id=user, store_name="ChatHistoryThreads", record_id=thread_id, field_name="messages")
 
                 for msg in messages:
                     content = msg.get("content", "")

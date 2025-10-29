@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List, Type
 import asyncio
 import logging
 from .protocols import (
-    AuthPlugin, ModelPlugin, ThreadManagerPlugin, StorePlugin, 
+    AuthPlugin, ModelPlugin, ThreadManagerPlugin, StorePlugin,
     FunctionPlugin, ToolPlugin, CorePlugin, PROTOCOL_REGISTRY
 )
 from .plugin_loader import PluginLoader
@@ -14,34 +14,40 @@ from .yaml_file_auth import YamlFileAuthPlugin
 from .default_model_client import DefaultModelClient
 from .default_thread_manager import DefaultThreadManager
 from .sqlite_store_plugin import SQLiteStorePlugin
+from .default_message_processor import DefaultMessageProcessor
+from .default_context_manager import DefaultContextManager
+from .yaml_system_prompt_manager import YamlSystemPromptManager
 
 logger = logging.getLogger("skeleton.plugin_manager")
 
 class PluginManager:
     """
     Dynamic plugin registry that manages plugins by role.
-    
+
     This replaces the hardcoded CorePluginManager approach with a flexible
     registry that can handle any role defined in PROTOCOL_REGISTRY.
     """
 
     def __init__(self):
         self.plugin_loader = PluginLoader()
-        
+
         # Registry of active plugins by role
         self._active_plugins: Dict[str, CorePlugin] = {}
-        
+
         # Registry of all loaded plugins for shutdown
         self._all_loaded_plugins: List[CorePlugin] = []
-        
+
         # Default plugin classes for each role
         self._default_plugins = {
             "auth": YamlFileAuthPlugin,
             "model": DefaultModelClient,
             "thread": DefaultThreadManager,
             "store": SQLiteStorePlugin,
+            "context": DefaultContextManager,
+            "system_prompt": YamlSystemPromptManager,
+            "message_processor": DefaultMessageProcessor,
         }
-        
+
         # Function and tool managers (keep these as they are)
         self.function = FunctionPluginManager(self.plugin_loader)
         self.tool = ToolPluginManager(self.plugin_loader)
@@ -88,11 +94,11 @@ class PluginManager:
     def _initialize_role(self, role: str, protocol_class: Type[CorePlugin]):
         """Initialize plugins for a specific role"""
         logger.debug(f"Initializing role '{role}'...")
-        
+
         try:
             # Try to get highest priority plugin from loader
             plugin = self.plugin_loader.get_core_plugin(role)
-            
+
             if plugin is None:
                 # Fallback to default implementation
                 default_class = self._default_plugins.get(role)
@@ -110,9 +116,9 @@ class PluginManager:
             # Store the active plugin
             self._active_plugins[role] = plugin
             self._all_loaded_plugins.append(plugin)
-            
+
             logger.debug(f"✓ Successfully initialized {role} plugin: {plugin.__class__.__name__}")
-            
+
         except Exception as e:
             logger.error(f"✗ Failed to initialize role '{role}': {e}", exc_info=True)
             raise
@@ -120,92 +126,89 @@ class PluginManager:
     def _validate_protocol_compliance(self):
         """Validate that each active plugin implements its required protocol"""
         logger.info("Validating protocol compliance for all active plugins...")
-        
+
         for role, plugin in self._active_plugins.items():
             logger.debug(f"Validating plugin '{plugin.__class__.__name__}' for role '{role}'")
-            
+
             try:
                 protocol_class = PROTOCOL_REGISTRY.get(role)
                 if not protocol_class:
                     raise RuntimeError(f"Role '{role}' not found in PROTOCOL_REGISTRY")
-                
+
                 # Debug: Log what we're checking
                 logger.debug(f"  Protocol: {protocol_class.__name__}")
-                
+
                 # Debug: Check if plugin has required methods
                 import inspect
                 protocol_methods = {name for name, _ in inspect.getmembers(protocol_class, inspect.isfunction) if not name.startswith('_')}
                 plugin_methods = {name for name, _ in inspect.getmembers(plugin, inspect.ismethod) or inspect.getmembers(plugin, inspect.isfunction) if not name.startswith('_')}
-                
+
                 logger.debug(f"  Protocol methods required: {protocol_methods}")
                 logger.debug(f"  Plugin methods available: {plugin_methods}")
                 missing_methods = protocol_methods - plugin_methods
                 if missing_methods:
                     logger.error(f"  ✗ Missing methods: {missing_methods}")
-                
+
                 # Duck typing check - verify plugin implements the protocol
                 if not isinstance(plugin, protocol_class):
                     plugin_class_name = plugin.__class__.__name__
                     protocol_name = protocol_class.__name__
-                    
+
                     error_msg = (
                         f"Plugin '{plugin_class_name}' for role '{role}' does not implement "
                         f"required protocol '{protocol_name}'. "
                         f"Plugin must implement all methods defined in {protocol_name}. "
                         f"Missing methods: {missing_methods if missing_methods else 'none (check signatures)'}"
                     )
-                    
+
                     logger.error(f"✗ PROTOCOL COMPLIANCE FAILED: {error_msg}")
                     raise RuntimeError(error_msg)
-                
+
                 logger.info(f"  ✓ Plugin '{plugin.__class__.__name__}' correctly implements {protocol_class.__name__}")
-                
+
             except Exception as e:
                 logger.error(f"✗ Failed to validate plugin '{plugin.__class__.__name__}' for role '{role}': {e}", exc_info=True)
                 raise
-        
+
         logger.info("✓ All plugins passed protocol validation")
 
     def get_plugin(self, role: str) -> CorePlugin:
         """Get the active plugin for a specific role"""
         if role not in self._active_plugins:
             raise RuntimeError(f"No plugin initialized for role '{role}'. Available roles: {list(self._active_plugins.keys())}")
-        
+
         return self._active_plugins[role]
 
     async def shutdown(self):
         """Graceful shutdown of all loaded plugins"""
         logger.debug("PluginManager: Starting shutdown of all plugins")
-        
+
         shutdown_tasks = []
-        
+
         # Create shutdown tasks for all plugins
         for plugin in self._all_loaded_plugins:
             if hasattr(plugin, 'shutdown'):
                 shutdown_tasks.append(self._safe_shutdown(plugin))
-        
+
         # Execute all shutdowns concurrently
         if shutdown_tasks:
             try:
                 await asyncio.gather(*shutdown_tasks, return_exceptions=True)
             except Exception as e:
                 logger.error(f"Error during plugin shutdown: {e}")
-        
+
         # Clear registries
         self._active_plugins.clear()
         self._all_loaded_plugins.clear()
-        
+
         logger.debug("PluginManager: Shutdown complete")
 
     async def _safe_shutdown(self, plugin: CorePlugin):
         """Safely shutdown a single plugin with error handling"""
-        try:
-            plugin_name = plugin.__class__.__name__
-            logger.debug(f"Shutting down plugin: {plugin_name}")
-            await plugin.shutdown()
-            logger.debug(f"Successfully shutdown plugin: {plugin_name}")
-        except Exception as e:
-            logger.error(f"Error shutting down plugin {plugin.__class__.__name__}: {e}", exc_info=True)
+        plugin_name = plugin.__class__.__name__
+        logger.debug(f"Shutting down plugin: {plugin_name}")
+        await plugin.shutdown()
+        logger.debug(f"Successfully shutdown plugin: {plugin_name}")
 
 
 
@@ -238,14 +241,31 @@ class ToolPluginManager:
 
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute a specific tool by name"""
+        logger.debug(f"Looking for tool '{tool_name}' among {len(self.plugin_loader.get_tool_plugins())} available tools")
+        
+        # Log all available tool names for debugging
+        available_tools = []
         for tool_plugin in self.plugin_loader.get_tool_plugins():
             try:
                 schema = tool_plugin.get_schema()
-                if schema.get('name') == tool_name:
+                # Handle both schema formats: direct name or nested under 'function'
+                if 'name' in schema:
+                    tool_name_from_schema = schema.get('name')
+                elif 'function' in schema and 'name' in schema['function']:
+                    tool_name_from_schema = schema['function'].get('name')
+                else:
+                    tool_name_from_schema = None
+                
+                available_tools.append(tool_name_from_schema)
+                logger.debug(f"Available tool: {tool_name_from_schema} (schema: {schema})")
+                
+                if tool_name_from_schema == tool_name:
+                    logger.debug(f"Found matching tool: {tool_name_from_schema}")
                     return await tool_plugin.execute(arguments)
             except Exception as e:
-                logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+                logger.error(f"Error checking tool plugin: {e}", exc_info=True)
 
+        logger.error(f"Tool '{tool_name}' not found. Available tools: {available_tools}")
         raise ValueError(f"Tool {tool_name} not found")
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

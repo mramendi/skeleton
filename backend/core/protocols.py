@@ -2,7 +2,7 @@
 Plugin protocols - define the contracts that plugins must implement.
 All protocols are defined here to avoid duplication and maintain consistency.
 """
-from typing import Dict, Any, Optional, List, Protocol, Union, Type
+from typing import Dict, Any, Optional, List, Protocol, Union, Type, AsyncGenerator
 from abc import abstractmethod
 from typing import runtime_checkable
 
@@ -62,7 +62,8 @@ class ModelPlugin(CorePlugin, Protocol):
         self,
         messages: List[Dict[str, Any]],
         model: str,
-        system_prompt: str
+        system_prompt: str,
+        tools: Optional[List[Dict[str, Any]]] = None
     ) -> Any:  # AsyncGenerator[Dict[str, Any], None]
         """Generate streaming response"""
         ...
@@ -88,8 +89,8 @@ class ThreadManagerPlugin(CorePlugin, Protocol):
         """Get all messages for a thread if user has access"""
         ...
 
-    async def add_message(self, thread_id: str, user: str, role: str, type: str, content: str, model: Optional[str] = None) -> bool:
-        """Add a message to a thread if user has access"""
+    async def add_message(self, thread_id: str, user: str, role: str, type: Optional[str], content: str, model: Optional[str] = None, aux_id: Optional[str] = None) -> bool:
+        """Add a message to a thread if user has access. aux_id can be tool call_id, file ID, etc."""
         ...
 
     async def update_thread(self, thread_id: str, user: str, title: Optional[str] = None) -> bool:
@@ -174,6 +175,195 @@ class StorePlugin(CorePlugin, Protocol):
         """
         ...
 
+@runtime_checkable
+class ContextPlugin(CorePlugin, Protocol):
+    """
+    Protocol for stateful context management plugins.
+
+    Manages a mutable, cached context, distinct from the immutable history.
+    This version supports message IDs for efficient, targeted modifications
+    like editing and removal, and provides a clean output for the model.
+    """
+
+    async def get_context(
+        self,
+        thread_id: str,
+        user_id: str,
+        strip_extra: bool = True
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Retrieve the currently cached context for a thread.
+
+        Args:
+            thread_id: The ID of the thread.
+            user_id: The ID of the user who owns the thread.
+            strip_extra: If True (default), returns messages in a clean format
+                         suitable for the model API (e.g., stripping internal
+                         IDs). If False, returns messages with all internal
+                         metadata.
+
+        Returns:
+            The cached list of message dictionaries, or None if not found.
+        """
+        ...
+
+    async def add_message(
+        self,
+        thread_id: str,
+        user_id: str,
+        message: Dict[str, Any],
+        message_id: Optional[str] = None
+    ) -> str:
+        """
+        Add a single message to the end of the cached context.
+
+        Every message is assigned a unique ID for future reference.
+
+        Args:
+            thread_id: The ID of the thread.
+            user_id: The ID of the user who owns the thread.
+            message: The message dictionary to add.
+            message_id: An optional unique ID for the message. If None, the
+                        plugin will generate and return a unique ID.
+
+        Returns:
+            The unique ID of the message that was added.
+        """
+        ...
+
+    async def update_message(
+        self,
+        thread_id: str,
+        user_id: str,
+        message_id: str,
+        updates: Dict[str, Any]
+    ) -> bool:
+        """
+        Update a specific message in the cached context by its ID.
+
+        This is used for in-place modifications, such as removing a
+        'reasoning' key after a tool call loop is complete.
+
+        Args:
+            thread_id: The ID of the thread.
+            user_id: The ID of the user who owns the thread.
+            message_id: The unique ID of the message to update.
+            updates: A dictionary of key-value pairs to update in the message.
+                     To remove a key, set its value to `None`.
+
+        Returns:
+            True if the message was successfully updated, False otherwise.
+        """
+        ...
+
+    async def remove_messages(
+        self,
+        thread_id: str,
+        user_id: str,
+        message_ids: List[str]
+    ) -> bool:
+        """
+        Efficiently remove specific messages from the cached context by their IDs.
+
+        Args:
+            thread_id: The ID of the thread.
+            user_id: The ID of the user who owns the thread.
+            message_ids: A list of unique message IDs to remove.
+
+        Returns:
+            True if the operation was successful, False otherwise.
+        """
+        ...
+
+    async def update_context(
+        self,
+        thread_id: str,
+        user_id: str,
+        context: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        Overwrite the entire cached context for a thread.
+        Used for bulk transformations like compression.
+        """
+        ...
+
+    async def regenerate_context(
+        self,
+        thread_id: str,
+        user_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Regenerate the context for a thread from its full history.
+        """
+        ...
+
+    async def invalidate_context(
+        self,
+        thread_id: str,
+        user_id: str
+    ) -> bool:
+        """
+        Invalidate (delete) the cached context for a thread.
+        """
+        ...
+
+
+@runtime_checkable
+class SystemPromptPlugin(CorePlugin, Protocol):
+    """Protocol for system prompt management plugins"""
+
+    async def get_prompt(self, key: str) -> Optional[str]:
+        """Get system prompt content by key. Returns None if not found."""
+        ...
+
+    async def list_prompts(self) -> Dict[str, str]:
+        """List all available prompt keys and descriptions."""
+        ...
+
+    async def get_all_prompts(self) -> Dict[str, Dict[str, str]]:
+        """Get all prompts with full metadata."""
+        ...
+
+@runtime_checkable
+class MessageProcessorPlugin(CorePlugin, Protocol):
+    """
+    Protocol for plugins that process user messages and generate streaming responses.
+
+    This plugin orchestrates the entire message-handling flow, including thread
+    management, model interaction, and response streaming, yielding a series of
+    event dictionaries.
+    """
+
+    async def process_message(
+        self,
+        user_id: str,
+        content: str,
+        thread_id: Optional[str],
+        model: Optional[str],
+        system_prompt: Optional[str]
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Process a message and yield a stream of event dictionaries.
+
+        The plugin is responsible for the entire flow:
+        - Creating or retrieving the thread
+        - Adding the user's message to the thread history
+        - Calling the model plugin to generate a response
+        - Yielding events (e.g., thread_id, message_tokens, tool_call, error)
+        - Saving the final assistant response to the thread history
+        - Managing the context cache via the context plugin
+
+        Args:
+            user_id: The ID of the user sending the message.
+            content: The content of the user's message.
+            thread_id: The ID of the thread, or None to create a new one.
+            model: The model to use for generation.
+            system_prompt: The system prompt to use.
+
+        Yields:
+            Dictionaries representing events to be sent to the client.
+        """
+        ...
 
 @runtime_checkable
 class FunctionPlugin(Protocol):
@@ -236,4 +426,7 @@ PROTOCOL_REGISTRY: Dict[str, Type[CorePlugin]] = {
     "model": ModelPlugin,
     "thread": ThreadManagerPlugin,
     "store": StorePlugin,
+    "context": ContextPlugin,
+    "system_prompt": SystemPromptPlugin,
+    "message_processor": MessageProcessorPlugin,
 }

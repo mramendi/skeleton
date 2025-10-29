@@ -71,7 +71,7 @@ class DefaultModelClient():
 
         if self.client:
             logger.info(f"Client base_url: {self.client.base_url}")
-            logger.info(f"Client API key (first 8 chars): {str(self.client.api_key)[:8]}...")
+            logger.info(f"Client API key present: {str(bool(self.client.api_key))}")
 
         if not self.client:
             logger.error("🚨 NO OPENAI_API_KEY CONFIGURED - MODEL CLIENT DISABLED 🚨")
@@ -154,26 +154,20 @@ class DefaultModelClient():
             }
             return
 
-        # Convert messages to OpenAI format
+        # Prepare messages for OpenAI API
+        # Use the supplied messages directly and prepend the system prompt
         openai_messages = []
-
-        # Add system prompt if provided
-        if system_prompt and system_prompt != "default":
+        if system_prompt is not None:
             openai_messages.append({
                 "role": "system",
                 "content": system_prompt
             })
-
-        # Convert history messages
-        for msg in messages:
-            role = msg.get("role")
-            if role in ["user", "assistant", "system"]:
-                openai_messages.append({
-                    "role": role,
-                    "content": msg.get("content", "")
-                })
+        openai_messages.extend(messages)
 
         logger.info(f"Generating response with model {model}, {len(openai_messages)} messages, {len(tools) if tools else 0} tools")
+
+        # Accumulate metadata from the stream
+        response_metadata = {}
 
         # Stream tokens
         try:
@@ -183,7 +177,8 @@ class DefaultModelClient():
                 "messages": openai_messages,
                 "temperature": 0.7,
                 "max_tokens": 2000,
-                "stream": True
+                "stream": True,
+                "stream_options": {"include_usage": True}
             }
 
             # Add tools if provided
@@ -195,12 +190,77 @@ class DefaultModelClient():
             stream = await self.client.chat.completions.create(**request_params)
 
             async for chunk in stream:
-                # Handle different chunk types
+                # --- Comprehensive Metadata Capture ---
+                # Capture all top-level fields that are not streamed
+                for key, value in chunk.model_dump(exclude_unset=True, exclude={'choices'}).items():
+                    if key not in response_metadata or response_metadata[key] is None:
+                        response_metadata[key] = value
+
+                # Capture all choice-level fields that are not streamed (e.g., finish_reason)
+                if chunk.choices:
+                    if 'choices' not in response_metadata:
+                        response_metadata['choices'] = []
+                    # Ensure we have enough slots in the metadata choices list
+                    while len(response_metadata['choices']) <= chunk.choices[0].index:
+                        response_metadata['choices'].append({})
+
+                    choice_metadata = response_metadata['choices'][chunk.choices[0].index]
+                    for key, value in chunk.choices[0].model_dump(exclude_unset=True, exclude={'delta'}).items():
+                        if key not in choice_metadata or choice_metadata[key] is None:
+                            choice_metadata[key] = value
+
+                # --- Streamed Content Handling ---
                 delta = chunk.choices[0].delta if chunk.choices else None
 
                 if delta:
-                    # Regular content tokens
-                    if delta.content:
+                    # 1. Handle thinking/reasoning tokens (yield first)
+                    # Use attribute access for Pydantic models
+                    reasoning_content = None
+                    if hasattr(delta, 'reasoning'):
+                        reasoning_content = delta.reasoning
+                    elif hasattr(delta, 'reasoning_content'):
+                        reasoning_content = delta.reasoning_content
+
+                    if reasoning_content:
+                        yield {
+                            "event": "thinking_tokens",
+                            "data": {
+                                "content": reasoning_content,
+                                "timestamp": datetime.now().isoformat(),
+                                "model": model
+                            }
+                        }
+
+                    # 2. Handle tool calls
+                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                        for tool_call in delta.tool_calls:
+
+                            tool_call_data = tool_call.model_dump(exclude_unset=True)
+
+                            # # Use attribute access for Pydantic models
+                            # tool_call_data = {
+                            #     "id": tool_call.id if hasattr(tool_call, 'id') else None,
+                            #     "index": tool_call.index if hasattr(tool_call, 'index') else None,
+                            #     "type": tool_call.type if hasattr(tool_call, 'type') else None,
+                            # }
+                            #
+                            # if hasattr(tool_call, 'function') and tool_call.function:
+                            #     tool_call_data["function"] = {
+                            #         "name": tool_call.function.name if hasattr(tool_call.function, 'name') else None,
+                            #         "arguments": tool_call.function.arguments if hasattr(tool_call.function, 'arguments') else None
+                            #     }
+
+                            yield {
+                                "event": "tool_calls",
+                                "data": {
+                                    "tool_call": tool_call_data,
+                                    "timestamp": datetime.now().isoformat(),
+                                    "model": model
+                                }
+                            }
+
+                    # 3. Handle regular content tokens (yield after thinking)
+                    if hasattr(delta, 'content') and delta.content:
                         yield {
                             "event": "message_tokens",
                             "data": {
@@ -210,33 +270,18 @@ class DefaultModelClient():
                             }
                         }
 
-                    # TODO: Tool calls - for future implementation
-                    # When tool_calls are present:
-                    # 1. Parse tool call from delta.tool_calls
-                    # 2. Get tool plugin from PluginManager
-                    # 3. Validate arguments with Pydantic model (from llmio.function_parser.model_from_function)
-                    # 4. Execute tool function
-                    # 5. Add tool result to message history
-                    # 6. Continue conversation with tool result
-                    #
-                    # NOTE: Don't yield tool_call events to frontend yet - they break the current UI
-                    # Need to handle tool calls server-side and only stream the final response
-                    if delta.tool_calls:
-                        for tool_call in delta.tool_calls:
-                            logger.info(f"TODO: Tool call received: {tool_call.function.name if tool_call.function else 'unknown'}")
-                            # Future: validate with Pydantic, execute, add to history
-
                 # Check if stream is done
                 if chunk.choices and chunk.choices[0].finish_reason:
                     logger.info(f"Stream finished: {chunk.choices[0].finish_reason}")
-                    break
+                    # The loop will naturally terminate after the last chunk is processed.
 
-            # Send end of stream
+            # Send end of stream with accumulated metadata
             yield {
                 "event": "stream_end",
                 "data": {
                     "timestamp": datetime.now().isoformat(),
-                    "model": model
+                    "model": model,
+                    "metadata": response_metadata
                 }
             }
 
