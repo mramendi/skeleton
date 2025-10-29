@@ -7,7 +7,7 @@ A minimal, backend-heavy AI chat interface built to be fully modular. Designed t
 Current status:
 
 - Not tested NEARLY enough! Needs a lot of use-testing, please feel free to raise issues on GitHub and/or email mr (at) ramendik.eu and/or ping on Discord misha_r or Telegram @ramendik
-- Single OpenAI endpoint only. Recommended usage: set up your own [https://docs.litellm.ai/docs/simple_proxy](LiteLLM Proxy) to access any number of endpoints, and/or use a routing and/or subscription service such as OpenRouter or [https://nano-gpt.com/invite/K4xLN4W9](NanoGPT) (note this is an invite link, I find their subscription to be good value but they are still ironing out glitches).
+- Single OpenAI endpoint only. Recommended usage: set up your own [LiteLLM Proxy](https://docs.litellm.ai/docs/simple_proxy) to access any number of endpoints, and/or use a routing and/or subscription service such as OpenRouter or [NanoGPT](https://nano-gpt.com/invite/K4xLN4W9) (note this is an invite link, I find their subscription to be good value but they are still ironing out glitches).
 - Model selection and chat runs; threads persist and full-test search for threads is available
 - System prompts configured via YAML file
 - User management with a YAML file that includes usernames, bcrypt-hashed passwords, roles (which don't do anything yet), and an optional model mask to allow a user to use only a subset of models
