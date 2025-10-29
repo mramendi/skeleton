@@ -569,6 +569,41 @@ function chatApp() {
                                     }
                                     console.log('[DEBUG] Thread ID set to:', this.currentThreadId);
                                 } else if (data.event === 'message_tokens') {
+                                    // If tool call occurred, create new assistant message before adding content
+                                    if (toolCallOccurred) {
+                                        // Check if current assistant message is empty
+                                        const isEmpty = !assistantMessage.segments ||
+                                                        assistantMessage.segments.length === 0 ||
+                                                        assistantMessage.segments.every(s => !s.content);
+
+                                        if (isEmpty) {
+                                            // Remove the empty assistant message
+                                            const index = this.messages.findIndex(m => m.id === assistantMessageId);
+                                            if (index !== -1) {
+                                                this.messages.splice(index, 1);
+                                                console.log('[DEBUG] Removed empty assistant message before tool call');
+                                            }
+                                        }
+
+                                        // Create a new assistant message that will receive responses after the tool call
+                                        assistantMessageId = Date.now().toString() + '-assistant-after-tool';
+                                        plainAssistantMessage = {
+                                            id: assistantMessageId,
+                                            role: 'assistant',
+                                            content: '',
+                                            timestamp: new Date().toISOString(),
+                                            segments: []
+                                        };
+                                        this.messages.push(plainAssistantMessage);
+                                        console.log('[DEBUG] Created new assistant message after all tool calls');
+
+                                        // Update reference to the new message
+                                        assistantMessage = plainAssistantMessage;
+
+                                        // Reset flag so we don't create multiple assistant messages
+                                        toolCallOccurred = false;
+                                    }
+
                                     // Add message as a separate segment to maintain order
                                     if (assistantMessage) {
                                         // Initialize segments array if not present
@@ -612,6 +647,41 @@ function chatApp() {
                                         });
                                     }
                                 } else if (data.event === 'thinking_tokens') {
+                                    // If tool call occurred, create new assistant message before adding content
+                                    if (toolCallOccurred) {
+                                        // Check if current assistant message is empty
+                                        const isEmpty = !assistantMessage.segments ||
+                                                        assistantMessage.segments.length === 0 ||
+                                                        assistantMessage.segments.every(s => !s.content);
+
+                                        if (isEmpty) {
+                                            // Remove the empty assistant message
+                                            const index = this.messages.findIndex(m => m.id === assistantMessageId);
+                                            if (index !== -1) {
+                                                this.messages.splice(index, 1);
+                                                console.log('[DEBUG] Removed empty assistant message before tool call');
+                                            }
+                                        }
+
+                                        // Create a new assistant message that will receive responses after the tool call
+                                        assistantMessageId = Date.now().toString() + '-assistant-after-tool';
+                                        plainAssistantMessage = {
+                                            id: assistantMessageId,
+                                            role: 'assistant',
+                                            content: '',
+                                            timestamp: new Date().toISOString(),
+                                            segments: []
+                                        };
+                                        this.messages.push(plainAssistantMessage);
+                                        console.log('[DEBUG] Created new assistant message after all tool calls');
+
+                                        // Update reference to the new message
+                                        assistantMessage = plainAssistantMessage;
+
+                                        // Reset flag so we don't create multiple assistant messages
+                                        toolCallOccurred = false;
+                                    }
+
                                     // Add thinking tokens to the last thinking segment
                                     if (assistantMessage) {
                                         // Initialize segments array if not present
@@ -665,35 +735,11 @@ function chatApp() {
                                         toolMessage.content += data.data.content + '\n';
                                     }
 
-                                    // Handle creating new assistant bubble after tool call (only once, after tool bubble is created)
+                                    // Mark that a tool call occurred - we'll create the new assistant message
+                                    // when we receive the first message_tokens or thinking_tokens after tool calls
                                     if (!toolCallOccurred) {
                                         toolCallOccurred = true;
-
-                                        // Check if current assistant message is empty
-                                        const isEmpty = !assistantMessage.segments ||
-                                                        assistantMessage.segments.length === 0 ||
-                                                        assistantMessage.segments.every(s => !s.content);
-
-                                        if (isEmpty) {
-                                            // Remove the empty assistant message
-                                            const index = this.messages.findIndex(m => m.id === assistantMessageId);
-                                            if (index !== -1) {
-                                                this.messages.splice(index, 1);
-                                                console.log('[DEBUG] Removed empty assistant message before tool call');
-                                            }
-                                        }
-
-                                        // Create a new assistant message that will receive responses after the tool call
-                                        assistantMessageId = Date.now().toString() + '-assistant-after-tool';
-                                        plainAssistantMessage = {
-                                            id: assistantMessageId,
-                                            role: 'assistant',
-                                            content: '',
-                                            timestamp: new Date().toISOString(),
-                                            segments: []
-                                        };
-                                        this.messages.push(plainAssistantMessage);
-                                        console.log('[DEBUG] Created new assistant message after tool call');
+                                        console.log('[DEBUG] Tool call detected - will create new assistant message on next content');
                                     }
 
                                     // Auto-scroll
