@@ -15,7 +15,7 @@ Current status:
 - Tools work. You can use "function" tools where you simply provide a function with type hints and a docstring and it ghets converted to a tool schema (thanks, llmio team). Just drop your tools as *.py files into plugins/tools/ and restart the server. OpenWebUI compatible tools are likely to work if they don't use any OpenWebUI internals (including event emitters). Tools have full access to the core plugins of Skeleton. including thread history, context, and a data store.
 - Functions work. A function can get calls at three points: before a message is sent to the model, during the streaming of the response to the user, and after the streaming is finished. You can mutate the appropriate message every time and you also have full access to the core plugins of Skeleton. including thread history, context, and a data store.
 - Temperature temporarily hardcoded
-- API still not stable
+- API is *probably* not subject to backwards-incompatible changes **as documented**, barring radically unforeseen events. Additions for files are pending. 
 - Front-end is fully AI-generated, not human-reviewed, and therefore suboptimal and hard to modify. No CORS as I am not sure of security implications. (The back-end IS human-reviewed)
 - No file uploads yet - the immediate TODO right now
 - The sole available data store is SQLite, which has a key scaling limitation: only a single writing transaction can be active at any one time. Skeleton's SQLite data store mitigates this limitation by serializing all writes in a single worker process and also implementing automatic retry logic with exponential backoff to handle concurrent write operations safely across multiple worker processes.
@@ -28,6 +28,7 @@ Note: the icon is taken from the Disney classic Skeleton Dance, which is, as wid
 ## DOCUMENTATION
 
 - This file - introduction, usage instructions, extension instructions
+- [REST API documentation](api.md)
 - [Project manifesto](skeleton-manifesto-v1.md)
 - [Test suite documentation](backend/tests/README.md)
 - [Explanation of the duck typing protocol system for plugins](protocol_explanation.md)
