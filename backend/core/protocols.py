@@ -5,6 +5,8 @@ All protocols are defined here to avoid duplication and maintain consistency.
 from typing import Dict, Any, Optional, List, Protocol, Union, Type, AsyncGenerator
 from abc import abstractmethod
 from typing import runtime_checkable
+from asyncio import Task
+from openai.types.chat import ChatCompletionChunk
 
 # Define a type alias for the allowed top-level JSON structures
 JSONStructuredRepresentation = Union[Dict[str, Any], List[Any]]
@@ -207,6 +209,19 @@ class ContextPlugin(CorePlugin, Protocol):
         """
         ...
 
+    async def get_mutation_count(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Optional[int]:
+        """Retrieve the mutation count of the context for a thread.
+           An increase in the mutation count means that any message was *modified*
+           (and not just appended).
+           Background context conpressors need to BACK OFF if they see that
+           the mutation count is increased
+           Returns None only if the context does not exist"""
+        ...
+
     async def add_message(
         self,
         thread_id: str,
@@ -215,7 +230,8 @@ class ContextPlugin(CorePlugin, Protocol):
         message_id: Optional[str] = None
     ) -> str:
         """
-        Add a single message to the end of the cached context.
+        Add a single message to the end of the cached context. If the context for
+        this thread_id does not exist, it is created.
 
         Every message is assigned a unique ID for future reference.
 
@@ -228,6 +244,23 @@ class ContextPlugin(CorePlugin, Protocol):
 
         Returns:
             The unique ID of the message that was added.
+        """
+        ...
+
+    async def get_message(
+        self,
+        thread_id: str,
+        user_id: str,
+        message_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a specific message in the cached context by its ID.
+        Args:
+            thread_id: The ID of the thread.
+            user_id: The ID of the user who owns the thread.
+            message_id: The unique ID for the message.
+
+        Returns:
+            The message, or None if the thread_id or message_id is not found.
         """
         ...
 
@@ -297,16 +330,6 @@ class ContextPlugin(CorePlugin, Protocol):
         """
         ...
 
-    async def invalidate_context(
-        self,
-        thread_id: str,
-        user_id: str
-    ) -> bool:
-        """
-        Invalidate (delete) the cached context for a thread.
-        """
-        ...
-
 
 @runtime_checkable
 class SystemPromptPlugin(CorePlugin, Protocol):
@@ -367,19 +390,121 @@ class MessageProcessorPlugin(CorePlugin, Protocol):
 
 @runtime_checkable
 class FunctionPlugin(Protocol):
-    """Protocol for function plugins that modify request context"""
+    """
+    Protocol for function plugins that can intervene at three distinct points
+    in the request/response life-cycle:
+
+    1. pre_call      – mutate the data that will be sent to the model
+    2. filter_stream – inspect/transform every streamed chunk. Applies to
+                       what is DISPLAYED to the user only
+    3. post_call     – called after the turn is stored, can mutate context
+                       (including the recent message) via the context manager
+                       plugin. if you want to mutate the message BOTH in the
+                       user-visible thread AND in the context, mutate it BOTH
+                       in filter_stream() AND in post_call()
+                       post_call() is also a good place to launch background tasks
+                       (memory maintenance, context compression)
+
+    The user_id, thread_id, and a turn_correlation_id that is the same throughout the entire turn (including
+    any tool calls within the turn) are supplied
+
+    The plugin_manager module is injected into every function module on load
+    """
 
     def get_name(self) -> str:
-        """Return function name"""
+        """Return unique function name (used for ordering and logging)"""
         ...
 
     def get_priority(self) -> int:
-        """Return function priority"""
+        """Return priority (higher runs first for pre_call, last for
+           filter_stream and post_call)"""
         ...
 
-    async def execute(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute function with context"""
-        ...
+    async def shutdown(self) -> None:
+        """ Clean shutdown. If your function fires background tasks it should
+            keep a registry of them and cancel them all on shutdown"""
+
+    async def pre_call(
+        self,
+        user_id: str,
+        thread_id: str,
+        turn_correlation_id: str,
+        new_message: Dict[str, Any],
+        model: List[str],  # Single-element list for mutable string
+        system_prompt: List[str],  # Single-element list for mutable string
+        tools: List[Dict[str, Any]],
+    ) -> Any:
+        """
+        Called before any model call (including calls with tool results)
+        To be more exact it is called when a message is added to a call, so if
+        multiple tool results are added before a call, pre_call() gets called with
+        each of them separately and is free to mutate it.
+        Mutate any of the following arguments in-place:
+            new_message (this is the new message for the model call - user or tool result)
+            model[0] (modify the first element to change the model)
+            system_prompt[0] (modify the first element to change the system prompt)
+            tools
+        The core will apply these changes before calling the model.
+        You can use the plugin_manager.get_plugin("thread") to get the thread
+        manager and use it to read the thread history, and you can also use
+        plugin_manager.get_plugin("context") to access the context if available.
+        You can mutate the context (that does not have the new message yet) if
+        it is there, but note that if support for stateful APIs like OpenAI
+        Responses is ever added, mutating the context might be moot
+
+        Can be an R2R generator if you need to yield user updates
+        Any returned values are ignored
+        """
+
+    async def filter_stream(
+        self,
+        user_id: str,
+        thread_id: str,
+        turn_correlation_id: str,
+        chunk: ChatCompletionChunk,
+    ) -> Any:
+        """
+        Inspect or mutate every SSE chunk streamed to the user.
+        Return:
+          - None: drop the chunk (user sees nothing)
+          - same chunk: pass through unchanged
+          - modified chink: user sees the mutated version. STRONGLY RECOMMENDED
+          to use `new_chunk = chunk.model_copy(deep=True)`, as modifying an
+          original chunk in place can have unexpected side effects!
+
+        The *original* chunk is stored in the context. The modified version is seen
+        by the user and stored in the thread history. You can use post_call() to modify
+        the context (if support for a stateful API like OpenAI Responses is added,
+        a modified context might not work)
+
+        Can be an R2R generator if you need to yield user updates
+        """
+
+    async def post_call(
+        self,
+        user_id: str,
+        thread_id: str,
+        turn_correlation_id: str,
+        response_metadata: Dict[str, any],
+        assistant_message: Dict[str, any],
+    ) -> Any:
+        """
+        Called after a completed model call (which can be a tool_calls finish too)
+        response_metadata is the part of the object that is not in content/reasoning_content
+        This includes the ID as well as usage information and anything else that might be there
+
+        You can mutate the assistant_message - this version will be stored in the
+        context (though if support for stateful APIs like OpenAI Responses is added,
+        this might be moot). The user-facing assistant message is already displayed by
+        this point and cannot be changed.
+
+        This is also a good place to launch background context compressors.
+
+        Can be an R2R generator if you need to yield user updates; returned
+        values are ignored
+
+
+        """
 
 @runtime_checkable
 class ToolPlugin(Protocol):
@@ -401,6 +526,11 @@ class ToolPlugin(Protocol):
                 unit: Temperature unit
             '''
             return {"temp": 20, "unit": unit}
+
+
+    The user_id, thread_id, and a turn_correlation_id that is the same throughout the entire turn (including
+    any tool calls within the turn) are supplied. Function-based plugins can define any of these arguments if desired.
+
     """
 
     def get_schema(self) -> Dict[str, Any]:
@@ -411,11 +541,18 @@ class ToolPlugin(Protocol):
         """
         ...
 
-    async def execute(self, arguments: Dict[str, Any]) -> Any:
+    async def execute(self,
+                user_id: str,
+                thread_id: str,
+                turn_correlation_id: str,
+                arguments: Dict[str, Any]) -> Any:
         """Execute tool with arguments
 
         NOTE: For plain Python functions, arguments will be validated
         with Pydantic model before calling the function
+
+        NOTE: This function or the underlying Python function can also be an R2R
+        async generator
         """
         ...
 

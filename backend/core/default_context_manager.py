@@ -28,7 +28,10 @@ class DefaultContextManager():
         # Store schema definition for the context cache.
         # The context list is stored in a 'context' field.
         self._store_schema = {
-            "context": "json"  # The context list is stored in this field.
+            "context": "json",  # The context list is stored in this field
+            "mutation_count": "int" # Starts at 0 for new context,
+                                    # increases for every destructive mutation
+                                    # but NOT for add_message()
         }
         self._store_name = "ThreadContext"
 
@@ -80,8 +83,30 @@ class DefaultContextManager():
                 continue
             clean_msg = {k: v for k, v in msg.items() if not k.startswith('_')}
             clean_context.append(clean_msg)
-        
+
         return clean_context
+
+    async def get_mutation_count(
+        self,
+        thread_id: str,
+        user_id: str,
+    ) -> Optional[int]:
+        """Retrieve the mutation count of the context for a thread.
+           An increase in the mutation count means that any message was *modified*
+           (and not just appended).
+           Background context conpressors need to BACK OFF if they see that
+           the mutation count is increased
+           Returns None only if the context does not exist"""
+        store = self._get_store()
+        await store.create_store_if_not_exists(self._store_name, self._store_schema, cacheable=True)
+
+        # Get the record containing the context
+        record = await store.get(user_id=user_id, store_name=self._store_name, record_id=thread_id)
+        if not record or "context" not in record:
+            return None
+
+        return record.get("mutation_count",0)
+
 
     async def add_message(
         self,
@@ -106,11 +131,13 @@ class DefaultContextManager():
         if record is None or "context" not in record:
             # If no context exists, create a new one with this message
             new_context = [message_with_id]
-            await store.add(user_id=user_id, store_name=self._store_name, data={"context": new_context}, record_id=thread_id)
+            await store.add(user_id=user_id, store_name=self._store_name,
+                data={"context": new_context, "mutation_count":0}, record_id=thread_id)
         else:
             # If context exists, append to it
             current_context = record["context"]
-            
+            mutation_count = record.get("mutation_count",0)
+
             # Handle JSON string deserialization
             if isinstance(current_context, str):
                 import json
@@ -118,22 +145,44 @@ class DefaultContextManager():
                     current_context = json.loads(current_context)
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to deserialize context JSON for thread {thread_id}: {e}")
-                    # Treat as if no context exists
+                    # Treat as if no context exists; increase the mutation count in case the context got broken
                     new_context = [message_with_id]
-                    await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id, updates={"context": new_context})
+                    await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id,
+                        updates={"context": new_context, "mutation_count": mutation_count+1})
                     return message_id
-            
+
             # Validate that context is a list
             if not isinstance(current_context, list):
                 logger.error(f"Context for thread {thread_id} is not a list: {type(current_context)} - {current_context}")
-                # Treat as if no context exists
+                # Treat as if no context exists; increase the mutation count in case the context got broken
                 new_context = [message_with_id]
-                await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id, updates={"context": new_context})
+                await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id,
+                    updates={"context": new_context, "mutation_count": mutation_count+1})
             else:
+                # do NOT change the mutation count
                 current_context.append(message_with_id)
                 await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id, updates={"context": current_context})
-        
+
         return message_id
+
+    async def get_message(
+        self,
+        thread_id: str,
+        user_id: str,
+        message_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get a specific message in the cached context by its ID.
+        Returns None if the thread or message is not found"""
+
+        context = await self.get_context(thread_id, user_id)
+        if not context:
+            return None
+
+        for msg in context:
+            if msg.get("_id") == message_id:
+                return msg
+
+        return None
 
     async def update_message(
         self,
@@ -150,9 +199,10 @@ class DefaultContextManager():
         record = await store.get(user_id=user_id, store_name=self._store_name, record_id=thread_id)
         if not record or "context" not in record:
             return False
-        
+
         context = record["context"]
-        
+        mutation_count = record.get("mutation_count",0)
+
         # Handle JSON string deserialization
         if isinstance(context, str):
             import json
@@ -172,11 +222,13 @@ class DefaultContextManager():
                         msg[key] = value
                 message_found = True
                 break
-        
+
         if not message_found:
             return False
 
-        await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id, updates={"context": context})
+        # update and increase the mutation count
+        await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id,
+            updates={"context": context, "mutation_count": mutation_count+1})
         return True
 
     async def remove_messages(
@@ -193,9 +245,10 @@ class DefaultContextManager():
         record = await store.get(user_id=user_id, store_name=self._store_name, record_id=thread_id)
         if not record or "context" not in record:
             return False
-        
+
         original_context = record["context"]
-        
+        mutation_count = record.get("mutation_count",0)
+
         # Handle JSON string deserialization
         if isinstance(original_context, str):
             import json
@@ -205,7 +258,7 @@ class DefaultContextManager():
                 logger.error(f"Failed to deserialize context JSON for thread {thread_id}: {e}")
                 return False
         ids_to_remove = set(message_ids)
-        
+
         # Filter out messages with matching IDs
         new_context = [msg for msg in original_context if msg.get("_id") not in ids_to_remove]
 
@@ -213,7 +266,9 @@ class DefaultContextManager():
         if len(new_context) == len(original_context):
             return False
 
-        await store.update(user_id, self._store_name, thread_id, {"context": new_context})
+        # update and increase the mutation count
+        await store.update(user_id, self._store_name, thread_id,
+            {"context": new_context, "mutation_count": mutation_count+1})
         return True
 
     async def update_context(
@@ -238,9 +293,12 @@ class DefaultContextManager():
         # Check if a record already exists to decide between add and update
         existing_record = await store.get(user_id, self._store_name, thread_id)
         if existing_record is None:
-            await store.add(user_id=user_id, store_name=self._store_name, data={"context": context_with_ids}, record_id=thread_id)
+            await store.add(user_id=user_id, store_name=self._store_name,
+                data={"context": context_with_ids, "mutation_count": 0}, record_id=thread_id)
         else:
-            await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id, updates={"context": context_with_ids})
+            mutation_count = existing_record.get("mutation_count",0)
+            await store.update(user_id=user_id, store_name=self._store_name, record_id=thread_id,
+                updates={"context": context_with_ids, "mutation_count": mutation_count+1})
         return True
 
     async def regenerate_context(
@@ -249,8 +307,6 @@ class DefaultContextManager():
         user_id: str
     ) -> List[Dict[str, Any]]:
         """Regenerate the context for a thread from its full history."""
-        # Invalidate first to ensure a clean slate
-        await self.invalidate_context(thread_id, user_id)
 
         # Get history from the thread manager
         from .plugin_manager import plugin_manager
@@ -268,29 +324,18 @@ class DefaultContextManager():
             # Skip messages that are not user or assistant
             if msg.get("role") not in ["user", "assistant"]:
                 continue
-            
+
             # Create clean message with only role and content
             # Use .get() to prevent crashes if content is missing
             clean_msg = {
                 "role": msg["role"],
                 "content": msg.get("content", "")
             }
-            
+
             # Add ID for tracking
             context_with_ids.append({"_id": str(uuid.uuid4()), **clean_msg})
 
         # Store the newly generated context
         await self.update_context(thread_id, user_id, context_with_ids)
-        
-        return context_with_ids
 
-    async def invalidate_context(
-        self,
-        thread_id: str,
-        user_id: str
-    ) -> bool:
-        """Invalidate (delete) the cached context for a thread."""
-        store = self._get_store()
-        # The store must exist before we can delete from it
-        await store.create_store_if_not_exists(self._store_name, self._store_schema, cacheable=True)
-        return await store.delete(user_id=user_id, store_name=self._store_name, record_id=thread_id)
+        return context_with_ids

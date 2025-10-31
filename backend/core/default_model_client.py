@@ -48,7 +48,7 @@ class DefaultModelClient():
                     api_key=openai_key,
                     base_url=openai_base_url
                 )
-                logger.info(f"OpenAI client initialized (API key: {openai_key[:8]}..., base_url: {openai_base_url})")
+                logger.info(f"OpenAI client initialized (API key present, base_url: {openai_base_url})")
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
                 self.client = None

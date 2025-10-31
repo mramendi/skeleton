@@ -76,7 +76,8 @@ class YamlFileAuthPlugin():
                             secret = f.read().strip()
                             if secret:
                                 self.secret_key = secret
-                                logger.info(f"JWT secret loaded from file: {jwt_secret_file}")
+                                logger.info(f"JWT secret loaded from file")
+                                logger.debug(f"JWT secret loaded from file: {jwt_secret_file}")
                     except Exception as e:
                         logger.error(f"Error reading JWT secret file {jwt_secret_file}: {e}")
 
@@ -90,7 +91,8 @@ class YamlFileAuthPlugin():
                             secret = f.read().strip()
                             if secret:
                                 self.secret_key = secret
-                                logger.info(f"JWT secret loaded from file: {jwt_secret_path}")
+                                logger.info(f"JWT secret loaded from file")
+                                logger.debug(f"JWT secret loaded from file: {jwt_secret_path}")
                     except Exception as e:
                         logger.error(f"Error reading JWT secret file {jwt_secret_path}: {e}")
 

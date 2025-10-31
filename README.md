@@ -11,13 +11,15 @@ Current status:
 - Model selection and chat runs; threads persist and full-test search for threads is available
 - System prompts configured via YAML file
 - User management with a YAML file that includes usernames, bcrypt-hashed passwords, roles (which don't do anything yet), and an optional model mask to allow a user to use only a subset of models
-- Tools work. You can use "function" tools where you simply provide a function with type hints and a docstring and it ghets converted to a tool schema (thanks, llmio team). Just drop your tools as *.py files into plugins/tools/ and restart the server. OpenWebUI compatible tools are likely to work if they don't use any OpenWebUI internals.
+- Tools work. You can use "function" tools where you simply provide a function with type hints and a docstring and it ghets converted to a tool schema (thanks, llmio team). Just drop your tools as *.py files into plugins/tools/ and restart the server. OpenWebUI compatible tools are likely to work if they don't use any OpenWebUI internals (including event emitters). Tools have full access to the core plugins of Skeleton. including thread history, context, and a data store.
+- Functions work. A function can get calls at three points: before a message is sent to the model, during the streaming of the response to the user, and after the streaming is finished. You can mutate the appropriate message every time and you also have full access to the core plugins of Skeleton. including thread history, context, and a data store.
 - Temperature temporarily hardcoded
 - API still not stable
 - Front-end is fully AI-generated, not human-reviewed, and therefore suboptimal and hard to modify. No CORS as I am not sure of security implications. (The back-end IS human-reviewed)
-- No functions yet and no file uploads yet - these are the two items on the todo list before a wider announdement
+- No file uploads yet - the immediate TODO right now
 - The sole available data store is SQLite, which has a key scaling limitation: only a single writing transaction can be active at any one time. Skeleton's SQLite data store mitigates this limitation by serializing all writes in a single worker process and also implementing automatic retry logic with exponential backoff to handle concurrent write operations safely across multiple worker processes.
 - For any database changes, the SQLite data store can handle adding new fields but cannot handle destructive changes (such as changing a field's type or renaming a field). If such a change is required between versions, you may need to delete your skeleton.db file to start fresh. However we will aim to avoid such changes; if they happen, a very loud warning will be provided and the system will cleanly fail to start.
+- Rate limiting is implemented in-memory; while it is possible to run parallel workers with uvicorn, the rate limits will be per-worker (still some help against brute-force password attacks).
 - There is a test suite from an earlier stage of development, now out of date and significantly incomplete
 
 Note: the icon is taken from the Disney classic Skeleton Dance, which is, as widely reported, [now in the public domain](https://blog.archive.org/2025/01/13/public-domain-spotlight-the-skeleton-dance/).
@@ -28,7 +30,7 @@ Note: the icon is taken from the Disney classic Skeleton Dance, which is, as wid
 - [Project manifesto](skeleton-manifesto-v1.md)
 - [Test suite documentation](backend/tests/README.md)
 - [Explanation of the duck typing protocol system for plugins](protocol_explanation.md)
-- The `backend/docs` directory contains explanations of backend protocols and plugins in more detail
+- The `backend/docs` directory contains explanations of backend protocols, plugins, tools, and functions in more detail
 
 ## Features
 
@@ -40,7 +42,7 @@ Note: the icon is taken from the Disney classic Skeleton Dance, which is, as wid
 - **File Upload**: Support for file attachments (NOT YET)
 - **Authentication**: User authentication, in the future with role-based access. Currently implemented with a YAML configuration file that allows limiting user access to specific models
 - **Tool Support**: Ready for OpenAI function calling; uses llmio to create schemas from Python functions.
-- **Function support**: Functions can hook into the process at several points to modify the requests, responses, and model context (NOT YET)
+- **Function support**: Functions can hook into the process at several points to modify the requests, responses, and model context; they can also run background tasks such as context compression
 
 ## Quick Start
 
