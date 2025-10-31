@@ -137,6 +137,8 @@ NOTE: you can also use Podman instead of Docker. To use Podman, Replace the `doc
 
 ### Building the Docker Image
 
+Optionally, you can review and modify the Dockerfile. Notably, if you want to include any additional plugins (such as tools or functions), uncomment `COPY plugins/ ./plugins/`.
+
 First, build the Docker image from the repository:
 
 ```bash
