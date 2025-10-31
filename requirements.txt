@@ -10,3 +10,4 @@ python-dotenv
 PyJWT
 bcrypt
 aiosqlite
+pyyaml

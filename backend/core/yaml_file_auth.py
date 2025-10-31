@@ -6,7 +6,7 @@ import os
 import re
 import secrets
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 import bcrypt
@@ -253,7 +253,7 @@ class YamlFileAuthPlugin():
 
     def create_token(self, user: Dict[str, Any]) -> str:
         """Create a JWT token for a user."""
-        expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=self.access_token_expire_minutes)
         payload = {
             "sub": user["username"],
             "role": user["role"],

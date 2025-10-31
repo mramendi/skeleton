@@ -81,12 +81,12 @@ class DefaultModelClient():
             return ["MODELS NOT AVAILABLE"]
 
         try:
-            # Return cached models if available
-            if self.model_cache:
-                logger.info(f"Returning {len(self.model_cache)} cached models")
-                logger.info(f"Cached models: {self.model_cache}")
-                logger.info("=" * 60)
-                return self.model_cache
+            # Return cached models if available - DISABLED
+            # if self.model_cache:
+            #     logger.info(f"Returning {len(self.model_cache)} cached models")
+            #     logger.info(f"Cached models: {self.model_cache}")
+            #     logger.info("=" * 60)
+            #     return self.model_cache
 
             # Call async models.list() directly (we're already in async context)
             logger.info("Calling client.models.list() (async)...")

@@ -11,6 +11,7 @@ Current status:
 - Model selection and chat runs; threads persist and full-test search for threads is available
 - System prompts configured via YAML file
 - User management with a YAML file that includes usernames, bcrypt-hashed passwords, roles (which don't do anything yet), and an optional model mask to allow a user to use only a subset of models
+- Skeleton is fully modular with nearly all logic being in "core plugins". These core plugins together with the protocol defintions and plugin loaders are in the Skeleton source tree: `backend/core` . You can technically override any of the plugins, providing, for example, a different model client, a different data store, or even entirely different message handling, And if your core plugin correctly implements the protocol defined in `backend/core/protocols.py` , all other components will be able to call it! However, using tools and functions can be simpler for most tasks.    
 - Tools work. You can use "function" tools where you simply provide a function with type hints and a docstring and it ghets converted to a tool schema (thanks, llmio team). Just drop your tools as *.py files into plugins/tools/ and restart the server. OpenWebUI compatible tools are likely to work if they don't use any OpenWebUI internals (including event emitters). Tools have full access to the core plugins of Skeleton. including thread history, context, and a data store.
 - Functions work. A function can get calls at three points: before a message is sent to the model, during the streaming of the response to the user, and after the streaming is finished. You can mutate the appropriate message every time and you also have full access to the core plugins of Skeleton. including thread history, context, and a data store.
 - Temperature temporarily hardcoded
@@ -35,7 +36,7 @@ Note: the icon is taken from the Disney classic Skeleton Dance, which is, as wid
 ## Features
 
 - **Minimal Core**: Simple, well-documented codebase that's easy to understand and modify
-- **Plugin Architecture**: Extensible through plugins without modifying core files. *You can replace any part of the core by implementing its protocol in your code*; all protocols are in `backend/protocols.py`
+- **Plugin Architecture**: Extensible through plugins without modifying core files. *You can replace any part of the core by implementing its protocol in your code*; all protocols are in `backend/protocols.py`. (No extra plugins not in the source tree are required for running Skeleton)
 - **Backend-Heavy**: All business logic and state management on the backend
 - **Real-time Chat**: Server-sent events for streaming responses
 - **Thread Management**: Persistent chat threads with search functionality
@@ -346,8 +347,7 @@ This creates a default user `default` with password `default` and admin privileg
 
 Skeleton uses a plugin system. The `plugins/` directory is git-ignored, allowing you to maintain customizations separately from the core.
 
-Some potentially useful plugins are in the `plugin_library/` directory. You can symlink any of them to your plugins directory to use it and receive any updates automatically (`ln -s plugin_library/example-plugin.py plugins/core/`). Alternatively you can copy any file from `plugin_library/` to a subdirectory in `plugins/` to modify it; in that case, watch for updates of the original plugin (the plugins list a last update date). (THE CURRENT EXAMPLES IN `plugin_library/` ARE NOT YET SUPPORTABLE)
-
+Some potentially useful plugins are in the `plugin_library/` directory. You can symlink any of them to your plugins directory to use it and receive any updates automatically (`ln -s plugin_library/example-plugin.py plugins/core/`). Alternatively you can copy any file from `plugin_library/` to a subdirectory in `plugins/` to modify it; in that case, watch for updates of the original plugin (the plugins list a last update date).
 ### Plugin Types
 
 1. **Core Plugins** (`plugins/core/`) - Override default functionality

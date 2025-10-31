@@ -795,6 +795,15 @@ function chatApp() {
             localStorage.removeItem('authToken');
             document.getElementById('app-container').classList.add('hidden');
             document.getElementById('login-container').classList.remove('hidden');
+
+            // Clear login form credentials
+            const loginContainer = document.getElementById('login-container');
+            if (loginContainer && loginContainer._x_dataStack && loginContainer._x_dataStack[0]) {
+                const loginAppInstance = loginContainer._x_dataStack[0];
+                loginAppInstance.username = '';
+                loginAppInstance.password = '';
+                loginAppInstance.error = '';
+            }
         },
 
         renderMarkdown(content) {
