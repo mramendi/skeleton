@@ -22,6 +22,10 @@ COPY frontend/ ./frontend/
 COPY main.py ./main.py
 COPY system_prompts.yaml ./system_prompts.yaml
 
+# enable this to copy any plugins you want installed, such as tools or functions
+# COPY plugins/ ./plugins/
+
+
 # Create data directory
 RUN mkdir -p /app/data
 
