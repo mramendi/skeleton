@@ -55,7 +55,7 @@ Note: the icon is taken from the Disney classic Skeleton Dance, which is, as wid
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/mramendi/skeleton.git
 cd skeleton
 ```
 
@@ -74,8 +74,9 @@ pip install -r requirements.txt
 4. Set up environment variables:
 ```bash
 cp .env.example .env
-# Edit .env with your API keys and settings
 ```
+
+You must at the very least set OPENAI_API_KEY and OPENAI_BASE_URL to connect to your inference provider or proxy.
 
 5. Set up authentication:
 
