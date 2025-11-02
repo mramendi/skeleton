@@ -34,7 +34,7 @@ logger = logging.getLogger("skeleton.sqlite_store")
 class SQLiteCrudOperations:
     """
     Handles Create, Read, Update, Delete and query operations.
-    
+
     This class provides the fundamental CRUD operations for stores:
     - Adding new records with validation
     - Retrieving records by ID or with filters
@@ -44,11 +44,11 @@ class SQLiteCrudOperations:
     - Full-text search across indexed fields
     """
 
-    def __init__(self, conn_manager: SQLiteConnectionManager, 
+    def __init__(self, conn_manager: SQLiteConnectionManager,
                  schema_manager: SQLiteSchemaManager):
         """
         Initialize CRUD operations.
-        
+
         Args:
             conn_manager: Database connection manager
             schema_manager: Schema manager for validation
@@ -56,39 +56,39 @@ class SQLiteCrudOperations:
         self._conn_manager = conn_manager
         self._schema_manager = schema_manager
 
-    async def add(self, user_id: str, store_name: str, data: Dict[str, Any], 
+    async def add(self, user_id: str, store_name: str, data: Dict[str, Any],
                   record_id: Optional[str] = None,
                   _db: Optional["aiosqlite.Connection"] = None) -> str:
         """
         Add a new record to a store.
-        
+
         This method:
         1. Validates the store exists
         2. Checks for duplicate ID
         3. Validates and serializes all field values
         4. Inserts the record with timestamps
         5. Handles json_collection field initialization
-        
+
         Args:
             user_id: ID of the user owning this record
             store_name: Name of the store to add to
             data: Dictionary of field values
             record_id: Optional record ID (generated if not provided)
             _db: Optional database connection (for transaction use)
-            
+
         Returns:
             The ID of the created record
-            
+
         Raises:
             ValueError: If store doesn't exist or ID already exists
             TypeError: If data values cannot be converted to field types
         """
-        async def add_logic(db: "aiosqlite.Connection", user_id: str, store_name: str, 
+        async def add_logic(db: "aiosqlite.Connection", user_id: str, store_name: str,
                           data: Dict[str, Any], record_id: str) -> str:
             """Inner function containing the core add logic."""
             # Check if ID already exists (primary key constraint)
             cursor = await db.execute(
-                f'SELECT 1 FROM "{store_name}" WHERE id = ?', 
+                f'SELECT 1 FROM "{store_name}" WHERE id = ?',
                 (record_id,)
             )
             if await cursor.fetchone():
@@ -109,13 +109,13 @@ class SQLiteCrudOperations:
                 validated_field_name = validate_field_name(field_name)
                 fields.append(f'"{validated_field_name}"')
                 placeholders.append('?')
-                
+
                 # Get and serialize the value
                 raw_value = data.get(field_name)
                 serialized_value = serialize_value(
-                    value=raw_value, 
-                    field_type=field_type, 
-                    field_name=field_name, 
+                    value=raw_value,
+                    field_type=field_type,
+                    field_name=field_name,
                     store_name=store_name
                 )
                 values.append(serialized_value)
@@ -127,7 +127,7 @@ class SQLiteCrudOperations:
             '''
             now = datetime.now().isoformat()
             await db.execute(
-                insert_sql, 
+                insert_sql,
                 [record_id] + values + [now, now]
             )
             logger.debug(
@@ -138,7 +138,7 @@ class SQLiteCrudOperations:
         # Generate UUID if not provided
         if record_id is None:
             record_id = str(uuid.uuid4())
-            
+
         # Validate inputs
         store_name = validate_store_name(store_name)
         logger.debug(f"Adding record to store '{store_name}' with ID '{record_id}'")
@@ -153,21 +153,21 @@ class SQLiteCrudOperations:
     async def get(self, user_id: str, store_name: str, record_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a single record by ID, returning raw collection metadata.
-        
+
         This method:
         1. Validates the store exists and gets its schema
         2. Queries for the specific record with user_id filter
         3. Deserializes all fields according to their types
         4. Returns collection metadata (not the actual collection items)
-        
+
         Args:
             user_id: ID of the user owning the record
             store_name: Name of the store containing the record
             record_id: ID of the record to retrieve
-            
+
         Returns:
             Dictionary containing the record data, or None if not found
-            
+
         Note:
             For json_collection fields, this returns metadata like:
             {"collection_store": "table_name", "count": N}
@@ -176,7 +176,7 @@ class SQLiteCrudOperations:
         # Get read connection for the query
         db = await self._conn_manager.get_read_db()
         logger.debug(f"Getting record '{record_id}' from store '{store_name}'")
-        
+
         # Validate store name
         store_name = validate_store_name(store_name)
 
@@ -189,15 +189,15 @@ class SQLiteCrudOperations:
         # Add system fields to schema for deserialization
         schema_with_meta = schema.copy()
         schema_with_meta.update({
-            "id": "str", 
-            "user_id": "str", 
-            "created_at": "str", 
+            "id": "str",
+            "user_id": "str",
+            "created_at": "str",
             "updated_at": "str"
         })
 
         # Query for the specific record with user isolation
         cursor = await db.execute(
-            f'SELECT * FROM "{store_name}" WHERE id = ? AND user_id = ?', 
+            f'SELECT * FROM "{store_name}" WHERE id = ? AND user_id = ?',
             (record_id, user_id)
         )
         row = await cursor.fetchone()
@@ -207,7 +207,7 @@ class SQLiteCrudOperations:
 
         # Get column names from cursor description
         columns = [desc[0] for desc in cursor.description]
-        
+
         # Deserialize each field according to its type
         result = {}
         for i, col_name in enumerate(columns):
@@ -222,33 +222,33 @@ class SQLiteCrudOperations:
                      updates: Dict[str, Any], partial: bool = True) -> bool:
         """
         Update a record by ID.
-        
+
         This method:
         1. Validates the record exists and belongs to the user
         2. Validates all update fields against the store schema
         3. Prevents updates to json_collection fields (append-only)
         4. Serializes all values according to field types
         5. Updates the record with a new timestamp
-        
+
         Args:
             user_id: ID of the user owning the record
             store_name: Name of the store containing the record
             record_id: ID of the record to update
             updates: Dictionary of field values to update
             partial: If True, only updates specified fields (always True)
-            
+
         Returns:
             bool: True if record was updated, False if no changes made
-            
+
         Raises:
             ValueError: If record doesn't exist, belongs to wrong user, or invalid fields
             TypeError: If values cannot be converted to field types
         """
         logger.debug(f"Updating record '{record_id}' in store '{store_name}' with: {updates}")
-        
+
         # Validate store name
         store_name = validate_store_name(store_name)
-        
+
         # Return early if no updates provided
         if not updates:
             return True
@@ -256,7 +256,7 @@ class SQLiteCrudOperations:
         # First verify record exists and belongs to user (using read connection)
         read_db = await self._conn_manager.get_read_db()
         cursor = await read_db.execute(
-            f'SELECT id FROM "{store_name}" WHERE id = ? AND user_id = ?', 
+            f'SELECT id FROM "{store_name}" WHERE id = ? AND user_id = ?',
             (record_id, user_id)
         )
         if not await cursor.fetchone():
@@ -272,6 +272,18 @@ class SQLiteCrudOperations:
             if not schema:
                 raise ValueError(f"Store '{store_name}' does not exist")
 
+            # First verify record exists and belongs to user (using read connection)
+            cursor = await db.execute(
+                f'SELECT id FROM "{store_name}" WHERE id = ? AND user_id = ?',
+                (record_id, user_id)
+            )
+            if not await cursor.fetchone():
+                raise ValueError(
+                    f"Record '{record_id}' does not exist or does not belong to user '{user_id}' "
+                    f"in store '{store_name}'"
+                )
+
+
             # Validate all update fields exist in schema
             schema_fields = set(schema.keys())
             update_fields = set(updates.keys())
@@ -284,7 +296,7 @@ class SQLiteCrudOperations:
 
             # Prevent updates to json_collection fields (they are append-only)
             collection_fields_in_update = [
-                f for f in updates.keys() 
+                f for f in updates.keys()
                 if f in schema and schema[f] == "json_collection"
             ]
             if collection_fields_in_update:
@@ -300,9 +312,9 @@ class SQLiteCrudOperations:
                 validated_field_name = validate_field_name(field_name)
                 field_type = schema[field_name]
                 serialized_value = serialize_value(
-                    value=value, 
-                    field_type=field_type, 
-                    field_name=field_name, 
+                    value=value,
+                    field_type=field_type,
+                    field_name=field_name,
                     store_name=store_name
                 )
                 set_clauses.append(f'"{validated_field_name}" = ?')
@@ -325,32 +337,32 @@ class SQLiteCrudOperations:
     async def delete(self, user_id: str, store_name: str, record_id: str) -> bool:
         """
         Delete a record by ID and associated collection/FTS entries.
-        
+
         This method:
         1. Validates the store exists
         2. Deletes the record with user_id filter for security
         3. Relies on foreign key constraints to cascade delete:
            - Collection items in child tables
            - FTS entries via triggers
-        
+
         Args:
             user_id: ID of the user owning the record
             store_name: Name of the store containing the record
             record_id: ID of the record to delete
-            
+
         Returns:
             bool: True if record was deleted, False if it didn't exist
-            
+
         Raises:
             ValueError: If store doesn't exist
             aiosqlite.Error: If database operation fails
         """
         logger.debug(f"Deleting record '{record_id}' from store '{store_name}'")
-        
+
         # Validate store name
         store_name = validate_store_name(store_name)
         deleted = False
-        
+
         try:
             # Perform deletion within a write transaction
             async with self._conn_manager.get_write_db() as db:
@@ -358,23 +370,23 @@ class SQLiteCrudOperations:
                 schema = await self._schema_manager.find_store(store_name)
                 if not schema:
                     raise ValueError(f"Store '{store_name}' does not exist")
-                
+
                 # Delete from FTS table first to maintain consistency
                 cursor = await db.execute(
                     f'DELETE FROM "fts_{store_name}" WHERE parent_id = ? AND user_id = ?',
                     (record_id, user_id)
                 )
-                
+
                 # Delete the record (cascade handles child tables)
                 cursor = await db.execute(
-                    f'DELETE FROM "{store_name}" WHERE id = ? AND user_id = ?', 
+                    f'DELETE FROM "{store_name}" WHERE id = ? AND user_id = ?',
                     (record_id, user_id)
                 )
                 deleted = cursor.rowcount > 0
-                
+
             logger.debug(f"Delete result for record '{record_id}': {deleted}")
             return deleted
-            
+
         except (aiosqlite.Error, ValueError) as e:
             logger.error(f"Error deleting record '{record_id}' from store '{store_name}': {e}")
             raise
@@ -382,20 +394,20 @@ class SQLiteCrudOperations:
     async def count(self, user_id: str, store_name: str, filters: Dict[str, Any] = None) -> int:
         """
         Count records matching filters.
-        
+
         This method:
         1. Builds WHERE clause from filters with proper validation
         2. Always includes user_id filter for multi-tenancy
         3. Returns the count of matching records
-        
+
         Args:
             user_id: ID of the user whose records to count
             store_name: Name of the store to query
             filters: Optional dictionary of field filters
-            
+
         Returns:
             int: Number of records matching the criteria
-            
+
         Raises:
             ValueError: If store doesn't exist or filters are invalid
             aiosqlite.Error: If database operation fails
@@ -403,28 +415,28 @@ class SQLiteCrudOperations:
         # Get read connection for counting
         db = await self._conn_manager.get_read_db()
         logger.debug(f"Counting records in store '{store_name}' with filters: {filters}")
-        
+
         # Validate store name
         store_name = validate_store_name(store_name)
-        
+
         try:
             # Build WHERE clause with filters and user_id
             where_sql, params = await build_where_clause(
-                db=db, 
-                store_name=store_name, 
-                user_id=user_id, 
+                db=db,
+                store_name=store_name,
+                user_id=user_id,
                 filters=filters
             )
-            
+
             # Execute COUNT query
             query = f'SELECT COUNT(*) FROM "{store_name}" {where_sql}'
             cursor = await db.execute(query, params)
             result = await cursor.fetchone()
             count = result[0] if result else 0
-            
+
             logger.debug(f"Count result for store '{store_name}' with filters {filters}: {count}")
             return count
-            
+
         except (aiosqlite.Error, ValueError) as e:
             logger.error(f"Error during count for store '{store_name}': {e}")
             raise
@@ -434,14 +446,14 @@ class SQLiteCrudOperations:
                    order_by: str = None, order_desc: bool = False) -> List[Dict[str, Any]]:
         """
         Find records with optional filters, pagination, and sorting.
-        
+
         This method:
         1. Builds WHERE clause from filters with validation
         2. Validates order_by field against schema
         3. Applies pagination with LIMIT/OFFSET
         4. Deserializes all fields according to their types
         5. Returns collection metadata (not actual items)
-        
+
         Args:
             user_id: ID of the user whose records to find
             store_name: Name of the store to query
@@ -450,10 +462,10 @@ class SQLiteCrudOperations:
             offset: Number of records to skip
             order_by: Field name to sort by
             order_desc: If True, sort in descending order
-            
+
         Returns:
             List of dictionaries containing matching records
-            
+
         Raises:
             ValueError: If store doesn't exist or filters/order_by are invalid
             aiosqlite.Error: If database operation fails
@@ -464,29 +476,29 @@ class SQLiteCrudOperations:
             f"Finding records in store '{store_name}' with filters: {filters}, "
             f"limit: {limit}, offset: {offset}"
         )
-        
+
         # Validate store name
         store_name = validate_store_name(store_name)
-        
+
         try:
             # Build WHERE clause with filters and user_id
             where_sql, params = await build_where_clause(
-                db=db, 
-                store_name=store_name, 
-                user_id=user_id, 
+                db=db,
+                store_name=store_name,
+                user_id=user_id,
                 filters=filters
             )
-            
+
             # Get schema for field validation and deserialization
             schema = await self._schema_manager.find_store(store_name)
-            if not schema: 
+            if not schema:
                 raise ValueError(f"Store '{store_name}' not found for ordering.")
-            
+
             # Add system fields to schema for deserialization
             schema_with_meta = schema.copy()
             schema_with_meta.update({
-                "id": "str", 
-                "created_at": "str", 
+                "id": "str",
+                "created_at": "str",
                 "updated_at": "str"
             })
 
@@ -506,7 +518,7 @@ class SQLiteCrudOperations:
 
             # Build pagination clause
             pagination_sql, pagination_params = await build_pagination_clause(
-                limit=limit, 
+                limit=limit,
                 offset=offset
             )
             params.extend(pagination_params)
@@ -517,12 +529,12 @@ class SQLiteCrudOperations:
             rows = await cursor.fetchall()
 
             # Return empty list if no results
-            if not rows: 
+            if not rows:
                 return []
-                
+
             # Get column names from cursor description
             columns = [desc[0] for desc in cursor.description]
-            
+
             # Deserialize each row into a dictionary
             results = []
             for row in rows:
@@ -532,10 +544,10 @@ class SQLiteCrudOperations:
                     field_type = schema_with_meta.get(col_name, "str")
                     record_dict[col_name] = deserialize_value(raw_value, field_type)
                 results.append(record_dict)
-                
+
             logger.debug(f"Found {len(results)} records in store '{store_name}'")
             return results
-            
+
         except (aiosqlite.Error, ValueError) as e:
             logger.error(f"Error during find for store '{store_name}': {e}")
             raise
@@ -544,38 +556,38 @@ class SQLiteCrudOperations:
                                limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
         """
         Full-text search across all indexable fields in a store.
-        
+
         This method:
         1. Searches the FTS virtual table for matching records
         2. Returns parent records ordered by relevance (rank)
         3. Applies pagination to the results
         4. Deserializes all fields according to their types
-        
+
         Args:
             user_id: ID of the user whose records to search
             store_name: Name of the store to search
             query: Full-text search query string
             limit: Maximum number of records to return
             offset: Number of records to skip
-            
+
         Returns:
             List of dictionaries containing matching records
-            
+
         Raises:
             ValueError: If store doesn't exist
             aiosqlite.Error: If database operation fails
         """
         # Get read connection for searching
         db = await self._conn_manager.get_read_db()
-        
+
         # Validate store name and build FTS table name
         store_name = validate_store_name(store_name)
         fts_table_name = f"fts_{store_name}"
-        
+
         logger.debug(
             f"Full-text search in store '{store_name}' for user '{user_id}' with query '{query}'"
         )
-        
+
         try:
             # Validate store exists
             schema = await self._schema_manager.find_store(store_name)
@@ -584,10 +596,10 @@ class SQLiteCrudOperations:
 
             # Build FTS match query with wildcard for partial matches
             match_string = f'"{query}"*'
-            
+
             # Build pagination clause
             pagination_sql, pagination_params = await build_pagination_clause(
-                limit=limit, 
+                limit=limit,
                 offset=offset
             )
 
@@ -600,14 +612,14 @@ class SQLiteCrudOperations:
                 {pagination_sql}
             '''
             cursor = await db.execute(
-                parent_id_query, 
+                parent_id_query,
                 [match_string, user_id] + pagination_params
             )
             parent_rows = await cursor.fetchall()
             parent_ids = [row[0] for row in parent_rows]
-            
+
             # Return empty list if no matches
-            if not parent_ids: 
+            if not parent_ids:
                 return []
 
             # Step 2: Fetch full records from main table
@@ -615,20 +627,20 @@ class SQLiteCrudOperations:
             main_query = f'SELECT * FROM "{store_name}" WHERE id IN ({placeholders}) AND user_id = ?'
             cursor = await db.execute(main_query, parent_ids + [user_id])
             rows = await cursor.fetchall()
-            
+
             # Return empty list if no records found
-            if not rows: 
+            if not rows:
                 return []
 
             # Get column names for deserialization
             columns = [desc[0] for desc in cursor.description]
-            
+
             # Add system fields to schema for deserialization
             schema_with_meta = schema.copy()
             schema_with_meta.update({
-                "id": "str", 
-                "created_at": "str", 
-                "updated_at": "str", 
+                "id": "str",
+                "created_at": "str",
+                "updated_at": "str",
                 "user_id": "str"
             })
 
@@ -646,7 +658,7 @@ class SQLiteCrudOperations:
                 f"Found {len(results)} records matching '{query}' in store '{store_name}'"
             )
             return results
-            
+
         except (aiosqlite.Error, ValueError) as e:
             logger.error(f"Error during full-text search for store '{store_name}': {e}")
             raise
